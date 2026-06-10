@@ -1,24 +1,24 @@
 #!/usr/bin/env pwsh
 <#
 .SYNOPSIS
-    Build HazariTracker Bio EXE and publish a GitHub Release.
+    Build HazariTracker Bio EXE (one-folder bundle) with PyInstaller.
 
 .DESCRIPTION
     1. Reads version from version.py
-    2. Commits + tags the release in git
+    2. Optionally bumps the patch number (-BumpPatch)
     3. Builds the EXE with PyInstaller (32-bit Python)
-    4. Zips the dist folder
-    5. Creates a GitHub Release via `gh` CLI and uploads the ZIP
+    4. Zips dist\HazariTrackerBio-vX.Y.Z\  ->  dist\HazariTrackerBio-vX.Y.Z-win32.zip
+
+    Run publish.ps1 separately to create the Inno Setup installer and
+    push a GitHub Release.
 
 .USAGE
-    .\build.ps1              # Build and publish
-    .\build.ps1 -SkipGitHub  # Build only (no GitHub release)
-    .\build.ps1 -Patch       # Auto-increment patch version before building
+    .\build.ps1              # Build current version
+    .\build.ps1 -BumpPatch   # Increment patch, then build
 #>
 
 param(
-    [switch]$SkipGitHub,
-    [switch]$Patch
+    [switch]$BumpPatch
 )
 
 Set-StrictMode -Version Latest
@@ -35,109 +35,84 @@ $versionFile = Join-Path $REPO_DIR "version.py"
 $vContent    = Get-Content $versionFile -Raw
 
 if ($vContent -match 'VERSION\s*=\s*"(\d+)\.(\d+)\.(\d+)"') {
-    $major = [int]$Matches[1]
-    $minor = [int]$Matches[2]
-    $patch = [int]$Matches[3]
+    [int]$majorVer = $Matches[1]
+    [int]$minorVer = $Matches[2]
+    [int]$patchVer = $Matches[3]
 } else {
-    Write-Error "Cannot parse VERSION from version.py"
+    Write-Error "Cannot parse VERSION from version.py"; exit 1
 }
 
-if ($Patch) {
-    $patch++
-    $vContent = $vContent -replace 'VERSION\s*=\s*"\d+\.\d+\.\d+"', "VERSION = `"$major.$minor.$patch`""
+if ($BumpPatch) {
+    $patchVer++
+    $vContent = $vContent -replace 'VERSION\s*=\s*"\d+\.\d+\.\d+"',
+                                    "VERSION = `"$majorVer.$minorVer.$patchVer`""
     $vContent = $vContent -replace 'VERSION_TUPLE\s*=\s*\(\d+,\s*\d+,\s*\d+,\s*\d+\)',
-                                    "VERSION_TUPLE = ($major, $minor, $patch, 0)"
+                                    "VERSION_TUPLE = ($majorVer, $minorVer, $patchVer, 0)"
     Set-Content $versionFile $vContent -NoNewline
-    Write-Host "Version bumped to $major.$minor.$patch" -ForegroundColor Cyan
+    Write-Host "Version bumped to $majorVer.$minorVer.$patchVer" -ForegroundColor Cyan
 }
 
-$VERSION = "$major.$minor.$patch"
-$TAG     = "v$VERSION"
+$VERSION   = "$majorVer.$minorVer.$patchVer"
+$TAG       = "v$VERSION"
 $DIST_NAME = "HazariTrackerBio-v$VERSION"
 $ZIP_NAME  = "$DIST_NAME-win32.zip"
 
 Write-Host ""
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "  HazariTracker Bio  Build  $TAG" -ForegroundColor Cyan
-Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "==========================================" -ForegroundColor Cyan
+Write-Host "  HazariTracker Bio  --  Build  $TAG"      -ForegroundColor Cyan
+Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host ""
 
+# ── Verify 32-bit Python ──────────────────────────────────────────────────────
+Write-Host "[1/4] Verifying 32-bit Python..." -ForegroundColor Yellow
+if (-not (Test-Path $PYTHON32)) {
+    Write-Error "32-bit Python not found at: $PYTHON32`nInstall Python 3.11 x86 to C:\Python311-32\"
+    exit 1
+}
+$pyBits = & $PYTHON32 -c "import struct; print(struct.calcsize('P')*8)"
+if ($pyBits -ne "32") {
+    Write-Error "Python at $PYTHON32 reports $pyBits-bit. Must be 32-bit for Mantra SDK."
+    exit 1
+}
+Write-Host "      Python 32-bit confirmed." -ForegroundColor Green
+
 # ── Clean previous build ──────────────────────────────────────────────────────
-Write-Host "[1/5] Cleaning previous build…" -ForegroundColor Yellow
+Write-Host "[2/4] Cleaning previous build..." -ForegroundColor Yellow
 Remove-Item $DIST_DIR  -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item $BUILD_DIR -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host "      Done." -ForegroundColor Green
 
 # ── Build with PyInstaller ────────────────────────────────────────────────────
-Write-Host "[2/5] Building EXE with PyInstaller…" -ForegroundColor Yellow
-& $PYTHON32 -m PyInstaller HazariTrackerBio.spec --clean --noconfirm 2>&1 |
-    ForEach-Object { Write-Host "      $_" }
+Write-Host "[3/4] Running PyInstaller..." -ForegroundColor Yellow
+Set-Location $REPO_DIR
+
+# Run via cmd so stderr (PyInstaller INFO logs) does not trip StrictMode
+$pyiArgs = "-m PyInstaller HazariTrackerBio.spec --clean --noconfirm"
+cmd /c "`"$PYTHON32`" $pyiArgs 2>&1" | ForEach-Object { Write-Host "      $_" }
+
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "PyInstaller failed (exit $LASTEXITCODE)"; exit 1
+}
 
 $exeFolder = Join-Path $DIST_DIR $DIST_NAME
 if (-not (Test-Path $exeFolder)) {
-    Write-Error "Build failed — dist folder not found: $exeFolder"
+    Write-Error "Expected dist folder not found: $exeFolder"; exit 1
 }
-Write-Host "      EXE built at: $exeFolder" -ForegroundColor Green
+Write-Host "      EXE folder: $exeFolder" -ForegroundColor Green
 
 # ── Zip the dist folder ───────────────────────────────────────────────────────
-Write-Host "[3/5] Creating ZIP archive…" -ForegroundColor Yellow
+Write-Host "[4/4] Zipping dist folder..." -ForegroundColor Yellow
 $zipPath = Join-Path $DIST_DIR $ZIP_NAME
 Compress-Archive -Path "$exeFolder\*" -DestinationPath $zipPath -Force
 $sizeMB = [math]::Round((Get-Item $zipPath).Length / 1MB, 1)
-Write-Host "      $ZIP_NAME  ($sizeMB MB)" -ForegroundColor Green
+Write-Host "      Created: $ZIP_NAME  ($sizeMB MB)" -ForegroundColor Green
 
-if ($SkipGitHub) {
-    Write-Host ""
-    Write-Host "Skipping GitHub release (-SkipGitHub flag set)." -ForegroundColor Gray
-    Write-Host "ZIP ready at: $zipPath" -ForegroundColor Cyan
-    exit 0
-}
-
-# ── Git commit + tag ──────────────────────────────────────────────────────────
-Write-Host "[4/5] Committing and tagging $TAG…" -ForegroundColor Yellow
-Set-Location $REPO_DIR
-git add -A
-git commit -m "Release $TAG" --allow-empty
-if ($LASTEXITCODE -ne 0) { Write-Error "git commit failed" }
-
-# Delete existing tag if it exists
-git tag -d $TAG 2>$null
-git push origin :refs/tags/$TAG 2>$null
-git tag $TAG
-git push origin main --tags
-Write-Host "      Tag $TAG pushed." -ForegroundColor Green
-
-# ── GitHub Release ────────────────────────────────────────────────────────────
-Write-Host "[5/5] Creating GitHub Release $TAG…" -ForegroundColor Yellow
-
-$releaseNotes = @"
-## HazariTracker Bio $TAG
-
-### What's included
-- Auto-continuous fingerprint scanner (Mantra MFS100)
-- Employee enrolment with fingerprint capture
-- Date-wise attendance report with CSV export
-- Minimises to system tray on close
-
-### Prerequisites (must be installed on the machine)
-1. **Mantra MFS100 Driver** — installs \`MFS100.sys\` kernel driver
-2. **Windows .NET Framework 4.x** — ships with Windows 10/11
-
-### Run
-Double-click \`HazariTrackerBio.exe\`
-"@
-
-gh release create $TAG $zipPath `
-    --title "HazariTracker Bio $TAG" `
-    --notes $releaseNotes `
-    --repo Themehakcodes/HazariTrackerBio
-
-if ($LASTEXITCODE -eq 0) {
-    Write-Host ""
-    Write-Host "========================================" -ForegroundColor Green
-    Write-Host "  Release $TAG published successfully!" -ForegroundColor Green
-    Write-Host "  https://github.com/Themehakcodes/HazariTrackerBio/releases/tag/$TAG" -ForegroundColor Green
-    Write-Host "========================================" -ForegroundColor Green
-} else {
-    Write-Error "gh release create failed"
-}
+Write-Host ""
+Write-Host "==========================================" -ForegroundColor Green
+Write-Host "  Build complete!  Version: $TAG"           -ForegroundColor Green
+Write-Host "  EXE folder : $exeFolder"                  -ForegroundColor Green
+Write-Host "  ZIP archive: $zipPath"                    -ForegroundColor Green
+Write-Host ""
+Write-Host "  To create the Windows Installer + GitHub Release, run:"
+Write-Host "      .\publish.ps1"                        -ForegroundColor Cyan
+Write-Host "==========================================" -ForegroundColor Green
