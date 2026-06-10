@@ -128,8 +128,13 @@ git add -A
 git commit -m "chore: Release $TAG" --allow-empty 2>&1 |
     ForEach-Object { Write-Host "      git: $_" }
 
+# Temporarily allow errors for tag cleanup
+$oldEAP = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
 git tag -d $TAG 2>$null
 git push origin ":refs/tags/$TAG" 2>$null
+$ErrorActionPreference = $oldEAP
+
 git tag $TAG
 git push origin main --tags 2>&1 |
     ForEach-Object { Write-Host "      git: $_" }
