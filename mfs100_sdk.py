@@ -38,7 +38,34 @@ TEMPLATE_ALLOC = 2048    # max template size (informational)
 RET_SUCCESS    = 0
 
 # ── DLL location ─────────────────────────────────────────────────────────────
-_MFS100_TEST_DIR = r"C:\Program Files\Mantra\MFS100\Driver\MFS100Test"
+_SYSTEM_INSTALL = r"C:\Program Files\Mantra\MFS100\Driver\MFS100Test"
+
+
+def _find_dll_dir() -> str:
+    """
+    Locate the folder that contains MANTRA.MFS100.dll.
+    Priority:
+      1. PyInstaller _MEIPASS (bundled EXE)
+      2. Same folder as this script / EXE
+      3. System Mantra install
+    """
+    # PyInstaller bundle
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass and os.path.isfile(os.path.join(meipass, "MANTRA.MFS100.dll")):
+        return meipass
+
+    # Next to the running script or exe
+    here = os.path.dirname(os.path.abspath(
+        sys.executable if getattr(sys, "frozen", False) else __file__
+    ))
+    if os.path.isfile(os.path.join(here, "MANTRA.MFS100.dll")):
+        return here
+
+    # System install fallback
+    return _SYSTEM_INSTALL
+
+
+_MFS100_TEST_DIR = _find_dll_dir()
 _MANTRA_DLL      = os.path.join(_MFS100_TEST_DIR, "MANTRA.MFS100.dll")
 
 
