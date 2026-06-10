@@ -124,20 +124,18 @@ if (-not $GITHUB_TOKEN) {
 Write-Host "[4/5] Committing and tagging $TAG..." -ForegroundColor Yellow
 Set-Location $REPO_DIR
 
-git add -A
-git commit -m "chore: Release $TAG" --allow-empty 2>&1 |
-    ForEach-Object { Write-Host "      git: $_" }
-
-# Temporarily allow errors for tag cleanup
+# Temporarily disable Stop for git stderr progress messages
 $oldEAP = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
+
+git add -A
+git commit -m "chore: Release $TAG" --allow-empty
 git tag -d $TAG 2>$null
 git push origin ":refs/tags/$TAG" 2>$null
-$ErrorActionPreference = $oldEAP
-
 git tag $TAG
-git push origin main --tags 2>&1 |
-    ForEach-Object { Write-Host "      git: $_" }
+git push origin main --tags
+
+$ErrorActionPreference = $oldEAP
 
 if ($LASTEXITCODE -ne 0) {
     Write-Error "git push failed"
