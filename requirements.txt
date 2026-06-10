@@ -1,0 +1,12 @@
+# HazariTracker Bio — Requirements
+# Install with:  pip install -r requirements.txt
+#
+# IMPORTANT: Must use 32-bit Python (the Mantra MFS100 SDK is 32-bit x86).
+# Use the launcher:  python run_32bit.py
+
+# pythonnet — loads MANTRA.MFS100.dll (.NET assembly) for fingerprint capture
+pythonnet>=3.0.0
+
+# Tkinter ships with Python — no pip install needed for the GUI.
+# Pillow is optional (for future photo-capture feature).
+Pillow>=10.0.0
