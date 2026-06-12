@@ -21,6 +21,8 @@ from theme import *
 from pages.scanner import ScannerPage
 from pages.enroll  import EnrollPage
 from pages.reports import ReportsPage
+from pages.sso     import SSOPage, SSOLoginFrame
+import sso_client
 
 
 class HazariTrackerApp(tk.Tk):
@@ -37,18 +39,26 @@ class HazariTrackerApp(tk.Tk):
         self._centre()
         self._apply_ttk()
 
+        # Set Window Icon
+        icon_path = "icon.ico"
+        if hasattr(sys, "_MEIPASS"):
+            icon_path = os.path.join(sys._MEIPASS, "icon.ico")
+        if os.path.exists(icon_path):
+            try:
+                self.iconbitmap(icon_path)
+            except Exception:
+                pass
+
         self._tray_icon = None
+        self._login_frame = None
 
         # Load SDK (no USB yet — fast)
         self.sdk = MFS100()
 
-        self._build()
-
-        if not self.sdk.is_demo:
-            self.after(250, self._init_device)
+        if sso_client.is_authenticated():
+            self._show_main_app()
         else:
-            self._update_badge(False)
-            self._scanner_page.start()
+            self._show_login_screen()
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -76,12 +86,26 @@ class HazariTrackerApp(tk.Tk):
 
         right = tk.Frame(hdr, bg=BG_SURFACE)
         right.pack(side="right", padx=PAD_LG)
+        
         self._badge = tk.Label(right, text="Initialising…",
                                font=FONT_SMALL, bg=BG_SURFACE,
                                fg=TEXT_SECONDARY)
-        self._badge.pack()
+        self._badge.pack(side="right", padx=(PAD_MD, 0))
+        
+        self._cloud_badge = tk.Label(right, text="○ Cloud Sync Disabled",
+                                     font=FONT_SMALL, bg=BG_SURFACE,
+                                     fg=TEXT_DISABLED)
+        self._cloud_badge.pack(side="right")
 
         tk.Frame(self, bg=ACCENT, height=2).pack(fill="x")
+
+    def _update_cloud_badge(self):
+        if sso_client.is_authenticated():
+            user = sso_client.get_user_info()
+            name = user.get("name", "Connected") if user else "Connected"
+            self._cloud_badge.config(text=f"● Cloud Sync: {name}", fg=SUCCESS)
+        else:
+            self._cloud_badge.config(text="○ Cloud Sync Disabled", fg=TEXT_DISABLED)
 
     def _build_nav(self):
         nav = tk.Frame(self, bg=BG_SURFACE, height=42)
@@ -91,7 +115,8 @@ class HazariTrackerApp(tk.Tk):
         self._nav_btns = {}
         for key, label in [("scanner", "  🖐  Scanner  "),
                             ("enroll",  "  👤  Employees  "),
-                            ("reports", "  📋  Reports  ")]:
+                            ("reports", "  📋  Reports  "),
+                            ("sso",     "  ☁  Cloud Sync  ")]:
             b = tk.Button(nav, text=label, font=FONT_H3,
                           bg=BG_SURFACE, fg=TEXT_SECONDARY,
                           relief="flat", bd=0, padx=PAD_SM,
@@ -109,10 +134,12 @@ class HazariTrackerApp(tk.Tk):
         self._scanner_page = ScannerPage(self._content, sdk=self.sdk)
         self._enroll_page  = EnrollPage (self._content, sdk=self.sdk)
         self._reports_page = ReportsPage(self._content)
+        self._sso_page     = SSOPage(self._content)
 
         self._pages = {"scanner": self._scanner_page,
                        "enroll":  self._enroll_page,
-                       "reports": self._reports_page}
+                       "reports": self._reports_page,
+                       "sso":     self._sso_page}
         self._show("scanner")
 
     def _build_statusbar(self):
@@ -135,16 +162,91 @@ class HazariTrackerApp(tk.Tk):
     # ── Navigation ────────────────────────────────────────────────────────────
 
     def _show(self, key: str):
+        # 1. Stop scanning thread if leaving scanner page
+        if hasattr(self, "_scanner_page") and self._scanner_page:
+            self._scanner_page.stop()
+
         for page in self._pages.values():
             page.pack_forget()
         self._pages[key].pack(fill="both", expand=True)
         for k, btn in self._nav_btns.items():
             btn.config(bg=BG_ELEVATED if k == key else BG_SURFACE,
                        fg=ACCENT       if k == key else TEXT_SECONDARY)
-        if key == "enroll":
+
+        # 2. Start scanner if entering scanner page
+        if key == "scanner":
+            self._scanner_page.start()
+        elif key == "enroll":
             self._enroll_page.refresh()
         elif key == "reports":
             self._reports_page.refresh()
+        elif key == "sso":
+            self._sso_page.refresh()
+
+    def _show_main_app(self):
+        if self._login_frame:
+            self._login_frame.destroy()
+            self._login_frame = None
+
+        # Clean up any residual widgets
+        for child in self.winfo_children():
+            child.destroy()
+
+        self._build()
+        self._update_cloud_badge()
+
+        # Start employee template synchronization in background thread
+        def sync_worker():
+            print("[Sync] Starting employee template synchronization...")
+            ok, msg = sso_client.sync_employees_from_server()
+            if ok:
+                print(f"[Sync] {msg}")
+                if hasattr(self, "_enroll_page") and self._enroll_page:
+                    self.after(0, self._enroll_page.refresh)
+            else:
+                print(f"[Sync] Failed: {msg}")
+        
+        threading.Thread(target=sync_worker, daemon=True).start()
+
+        if not self.sdk.is_demo:
+            self.after(250, self._init_device)
+        else:
+            self._update_badge(False)
+            self._scanner_page.start()
+
+    def _show_login_screen(self):
+        if self._login_frame:
+            return  # already showing login screen
+
+        # Stop scanner and close device
+        if hasattr(self, "_scanner_page") and self._scanner_page:
+            try:
+                self._scanner_page.stop()
+            except Exception:
+                pass
+        try:
+            self.sdk.close_device()
+        except Exception:
+            pass
+
+        # Destroy all main widgets
+        for child in self.winfo_children():
+            child.destroy()
+
+        self._nav_btns = {}
+        self._pages = {}
+
+        self._login_frame = SSOLoginFrame(self)
+        self._login_frame.pack(fill="both", expand=True)
+
+    def check_auth(self):
+        """Verify auth status and update the UI accordingly."""
+        if not sso_client.is_authenticated():
+            self.after(0, self._show_login_screen)
+        else:
+            self.after(0, self._update_cloud_badge)
+            if hasattr(self, "_sso_page"):
+                self.after(0, self._sso_page.refresh)
 
     # ── Device init ───────────────────────────────────────────────────────────
 
@@ -154,7 +256,8 @@ class HazariTrackerApp(tk.Tk):
         if ok:
             self._scanner_page.start()
         else:
-            self.after(3000, self._init_device)
+            if not self._login_frame:
+                self.after(3000, self._init_device)
 
     def _update_badge(self, connected: bool):
         if self.sdk.is_demo:
@@ -168,9 +271,12 @@ class HazariTrackerApp(tk.Tk):
     # ── System Tray ───────────────────────────────────────────────────────────
 
     def _on_close(self):
-        """Hide window to tray — scanner keeps running in background."""
-        self.withdraw()
-        self._show_tray()
+        """Hide window to tray (if logged in), otherwise exit."""
+        if self._login_frame:
+            self._quit_app()
+        else:
+            self.withdraw()
+            self._show_tray()
 
     def _show_tray(self):
         """Create/show system tray icon."""
@@ -181,17 +287,31 @@ class HazariTrackerApp(tk.Tk):
             import pystray
             from PIL import Image, ImageDraw, ImageFont
 
-            # Build a simple orange circle icon (64×64)
-            size = 64
-            img  = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-            draw = ImageDraw.Draw(img)
-            draw.ellipse([4, 4, 60, 60], fill="#FF6B00")
-            # White "H" letter
-            try:
-                draw.text((20, 16), "H", fill="white",
-                          font=ImageFont.truetype("segoeui.ttf", 30))
-            except Exception:
-                draw.text((22, 18), "H", fill="white")
+            # Try to load icon.png or fallback to generating one
+            icon_png_path = "icon.png"
+            if hasattr(sys, "_MEIPASS"):
+                icon_png_path = os.path.join(sys._MEIPASS, "icon.png")
+
+            if os.path.exists(icon_png_path):
+                try:
+                    img = Image.open(icon_png_path)
+                except Exception:
+                    img = None
+            else:
+                img = None
+
+            if img is None:
+                # Build a simple orange circle icon (64×64) fallback
+                size = 64
+                img  = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+                draw = ImageDraw.Draw(img)
+                draw.ellipse([4, 4, 60, 60], fill="#FF6B00")
+                # White "H" letter
+                try:
+                    draw.text((20, 16), "H", fill="white",
+                              font=ImageFont.truetype("segoeui.ttf", 30))
+                except Exception:
+                    draw.text((22, 18), "H", fill="white")
 
             def on_show(icon, item):
                 icon.stop()
@@ -227,8 +347,15 @@ class HazariTrackerApp(tk.Tk):
         self.focus_force()
 
     def _quit_app(self):
-        self._scanner_page.stop()
-        self.sdk.close_device()
+        if hasattr(self, "_scanner_page") and self._scanner_page:
+            try:
+                self._scanner_page.stop()
+            except Exception:
+                pass
+        try:
+            self.sdk.close_device()
+        except Exception:
+            pass
         self.destroy()
 
     # ── Utilities ─────────────────────────────────────────────────────────────

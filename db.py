@@ -24,16 +24,65 @@ def _connect() -> sqlite3.Connection:
 
 
 def init_db():
-    """Create tables if they don't exist yet."""
+    """Create tables if they don't exist yet, running migrations if required."""
     with _connect() as con:
+        # Check if the 'attendance' table has a broken foreign key referencing 'employees_old'
+        broken_fk = False
+        try:
+            fk_list = con.execute("PRAGMA foreign_key_list(attendance)").fetchall()
+            for fk in fk_list:
+                if fk["table"] == "employees_old":
+                    broken_fk = True
+                    break
+        except Exception:
+            pass
+
+        if broken_fk:
+            print("[DB] Fixing broken foreign key in attendance table...")
+            con.execute("PRAGMA foreign_keys = OFF")
+            con.execute("DROP TABLE IF EXISTS attendance")
+            con.execute("PRAGMA foreign_keys = ON")
+
+        # Check if the 'template' column exists and is NOT NULL
+        schema_info = con.execute("PRAGMA table_info(employees)").fetchall()
+        needs_migration = False
+        if schema_info:
+            for col in schema_info:
+                if col["name"] == "template" and col["notnull"] == 1:
+                    needs_migration = True
+                    break
+
+        if needs_migration:
+            print("[DB] Migrating employees table to support nullable templates...")
+            con.execute("PRAGMA foreign_keys = OFF")
+            con.execute("DROP TABLE IF EXISTS attendance")
+            con.execute("ALTER TABLE employees RENAME TO employees_old")
+            con.execute("""
+                CREATE TABLE employees (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    emp_id      TEXT    NOT NULL UNIQUE,
+                    name        TEXT    NOT NULL,
+                    department  TEXT    DEFAULT '',
+                    template    BLOB,
+                    enrolled_at TEXT
+                )
+            """)
+            con.execute("""
+                INSERT INTO employees (id, emp_id, name, department, template, enrolled_at)
+                SELECT id, emp_id, name, department, template, enrolled_at FROM employees_old
+            """)
+            con.execute("DROP TABLE employees_old")
+            con.execute("PRAGMA foreign_keys = ON")
+            print("[DB] Migration completed successfully.")
+
         con.executescript("""
             CREATE TABLE IF NOT EXISTS employees (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 emp_id      TEXT    NOT NULL UNIQUE,
                 name        TEXT    NOT NULL,
                 department  TEXT    DEFAULT '',
-                template    BLOB    NOT NULL,
-                enrolled_at TEXT    NOT NULL
+                template    BLOB,
+                enrolled_at TEXT
             );
 
             CREATE TABLE IF NOT EXISTS attendance (
@@ -46,32 +95,69 @@ def init_db():
                 score       INTEGER DEFAULT 0,
                 FOREIGN KEY (emp_id) REFERENCES employees(emp_id)
             );
+
+            CREATE TABLE IF NOT EXISTS settings (
+                key   TEXT PRIMARY KEY,
+                value TEXT
+            );
         """)
+
+
+# ── Settings operations ───────────────────────────────────────────────────────
+
+def get_setting(key: str) -> str | None:
+    with _connect() as con:
+        row = con.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else None
+
+
+def set_setting(key: str, value: str):
+    with _connect() as con:
+        con.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+            (key, value),
+        )
+
+
+def delete_setting(key: str):
+    with _connect() as con:
+        con.execute("DELETE FROM settings WHERE key = ?", (key,))
 
 
 # ── Employee operations ───────────────────────────────────────────────────────
 
-def add_employee(emp_id: str, name: str, department: str, template: bytes) -> bool:
+def add_employee(emp_id: str, name: str, department: str, template: bytes | None = None) -> bool:
     """Insert a new employee. Returns False if emp_id already exists."""
     try:
         with _connect() as con:
+            enrolled = datetime.now().isoformat(timespec="seconds") if template else None
             con.execute(
                 """INSERT INTO employees (emp_id, name, department, template, enrolled_at)
                    VALUES (?, ?, ?, ?, ?)""",
                 (emp_id.strip().upper(), name.strip(), department.strip(),
-                 template, datetime.now().isoformat(timespec="seconds")),
+                 template, enrolled),
             )
         return True
     except sqlite3.IntegrityError:
         return False
 
 
-def update_template(emp_id: str, template: bytes):
-    """Overwrite the stored fingerprint template for an existing employee."""
+def update_employee_details(emp_id: str, name: str, department: str):
+    """Update employee name and department details."""
     with _connect() as con:
         con.execute(
-            "UPDATE employees SET template = ? WHERE emp_id = ?",
-            (template, emp_id.strip().upper()),
+            "UPDATE employees SET name = ?, department = ? WHERE emp_id = ?",
+            (name.strip(), department.strip(), emp_id.strip().upper()),
+        )
+
+
+def update_template(emp_id: str, template: bytes):
+    """Overwrite the stored fingerprint template for an existing employee."""
+    now_str = datetime.now().isoformat(timespec="seconds")
+    with _connect() as con:
+        con.execute(
+            "UPDATE employees SET template = ?, enrolled_at = ? WHERE emp_id = ?",
+            (template, now_str, emp_id.strip().upper()),
         )
 
 
@@ -90,7 +176,7 @@ def get_employee(emp_id: str) -> sqlite3.Row | None:
 def get_all_employees() -> list[sqlite3.Row]:
     with _connect() as con:
         return con.execute(
-            "SELECT id, emp_id, name, department, enrolled_at FROM employees ORDER BY name"
+            "SELECT id, emp_id, name, department, enrolled_at, (template IS NOT NULL) as is_enrolled FROM employees ORDER BY name"
         ).fetchall()
 
 
@@ -98,7 +184,7 @@ def get_all_templates() -> list[tuple[str, str, bytes]]:
     """Return (emp_id, name, template) for every enrolled employee."""
     with _connect() as con:
         rows = con.execute(
-            "SELECT emp_id, name, template FROM employees"
+            "SELECT emp_id, name, template FROM employees WHERE template IS NOT NULL"
         ).fetchall()
     return [(r["emp_id"], r["name"], bytes(r["template"])) for r in rows]
 

@@ -9,6 +9,7 @@ from tkinter import ttk, messagebox
 import threading
 
 import db
+import sso_client
 from mfs100_sdk import MFS100, QUALITY_MIN
 from theme import *
 
@@ -118,6 +119,8 @@ class EnrollPage(tk.Frame):
         self._tree.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
 
+        self._tree.bind("<<TreeviewSelect>>", self._on_tree_select)
+
         # Delete button
         tk.Button(right, text="✕  Remove Selected",
                   bg=DANGER, fg=TEXT_PRIMARY, font=FONT_SMALL,
@@ -129,14 +132,36 @@ class EnrollPage(tk.Frame):
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
+    def _on_tree_select(self, event):
+        sel = self._tree.selection()
+        if not sel:
+            return
+        vals = self._tree.item(sel[0])["values"]
+        if vals:
+            self._emp_id.config(foreground=TEXT_PRIMARY)
+            self._emp_id.delete(0, "end")
+            self._emp_id.insert(0, vals[0])
+
+            self._name.config(foreground=TEXT_PRIMARY)
+            self._name.delete(0, "end")
+            self._name.insert(0, vals[1])
+
+            self._dept.config(foreground=TEXT_PRIMARY)
+            self._dept.delete(0, "end")
+            self._dept.insert(0, vals[2] if vals[2] != "—" else "")
+
+            is_enrolled = (vals[3] != "No")
+            self._re_enroll.set(is_enrolled)
+
     def refresh(self):
         for row in self._tree.get_children():
             self._tree.delete(row)
         for emp in db.get_all_employees():
+            enrolled_status = (emp["enrolled_at"] or "")[:10] if emp["is_enrolled"] else "No"
             self._tree.insert("", "end", values=(
                 emp["emp_id"], emp["name"],
                 emp["department"] or "—",
-                (emp["enrolled_at"] or "")[:10],
+                enrolled_status,
             ))
 
     def _field(self, parent, label: str, ph: str = "") -> ttk.Entry:
@@ -195,22 +220,46 @@ class EnrollPage(tk.Frame):
             return
 
         self._scanning = True
-        self._btn.config(state="disabled", text="⏳  Scanning …")
+        self._btn.config(state="disabled", text="⏳  Preparing …")
         self._ring.set_state("scanning")
-        self._status_var.set("Place finger firmly on sensor…")
         self._status_lbl.config(fg=TEXT_SECONDARY)
 
-        threading.Thread(
-            target=self._do_scan,
-            args=(emp_id, name, dept),
-            daemon=True,
-        ).start()
+        def countdown_and_scan():
+            import time
+
+            # 3 second visual countdown
+            for i in range(3, 0, -1):
+                self._status_var.set(f"Scanning starting in {i} seconds...")
+                time.sleep(1)
+
+            self._status_var.set("Place finger firmly on sensor…")
+            self.after(0, lambda: self._btn.config(text="⏳  Scanning …"))
+            
+            # Step 3: Run scan
+            self._do_scan(emp_id, name, dept)
+
+        threading.Thread(target=countdown_and_scan, daemon=True).start()
 
     def _do_scan(self, emp_id, name, dept):
+        import time
         ok, quality, template = self.sdk.capture_template(timeout_ms=12_000)
-        self.after(0, self._on_done, ok, quality, template, emp_id, name, dept)
+        
+        # Step 4: Re-init device once after scan to reset sensor state and leave it ready
+        if not self.sdk.is_demo:
+            try:
+                self.sdk.close_device()
+                time.sleep(0.4)
+                self.sdk.init_device()
+            except Exception:
+                pass
 
-    def _on_done(self, ok, quality, template, emp_id, name, dept):
+        upload_ok = True
+        upload_msg = ""
+        if ok and template:
+            upload_ok, upload_msg = sso_client.upload_fingerprint_template(emp_id, template)
+        self.after(0, self._on_done, ok, quality, template, emp_id, name, dept, upload_ok, upload_msg)
+
+    def _on_done(self, ok, quality, template, emp_id, name, dept, upload_ok, upload_msg):
         self._scanning = False
         self._btn.config(state="normal", text="🖐  Start Fingerprint Scan")
         self._quality_var.set(f"Quality: {quality}/100")
@@ -221,6 +270,12 @@ class EnrollPage(tk.Frame):
                    if quality == 0
                    else f"Quality too low ({quality}/100) — press firmly.")
             self._status_var.set(msg)
+            self._status_lbl.config(fg=DANGER)
+            return
+
+        if not upload_ok:
+            self._ring.set_state("failure")
+            self._status_var.set(f"Cloud sync failed: {upload_msg}")
             self._status_lbl.config(fg=DANGER)
             return
 

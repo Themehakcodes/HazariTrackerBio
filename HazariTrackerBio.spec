@@ -33,6 +33,8 @@ a = Analysis(
     datas=[
         ("pages",   "pages"),
         ("version.py", "."),
+        ("icon.png", "."),
+        ("icon.ico", "."),
     ],
     hiddenimports=[
         "clr",
@@ -75,7 +77,7 @@ exe = EXE(
     strip=False,
     upx=True,
     console=False,          # No black terminal window
-    icon=None,              # Add icon.ico here when available
+    icon='icon.ico',
 )
 
 coll = COLLECT(

@@ -21,10 +21,35 @@ import time
 import tkinter as tk
 from tkinter import ttk
 from datetime import datetime
+import winsound
 
 import db
+import sso_client
 from mfs100_sdk import MFS100
 from theme import *
+
+def play_beep_success():
+    try:
+        # A nice clean high double beep
+        winsound.Beep(1800, 150)
+        winsound.Beep(2200, 150)
+    except Exception:
+        pass
+
+def play_beep_warning():
+    try:
+        # A medium warning beep
+        winsound.Beep(1000, 400)
+    except Exception:
+        pass
+
+def play_beep_error():
+    try:
+        # A low error beep
+        winsound.Beep(440, 500)
+    except Exception:
+        pass
+
 
 
 class ScannerPage(tk.Frame):
@@ -102,7 +127,7 @@ class ScannerPage(tk.Frame):
             self.after(0, self._ui_scanning)
 
             try:
-                ok, quality, template = self.sdk.capture_iso_template(timeout_ms=5000)
+                ok, quality, template = self.sdk.capture_iso_template(timeout_ms=1000)
             except Exception as exc:
                 print(f"[Scanner] capture error: {exc}")
                 time.sleep(0.5)
@@ -113,18 +138,59 @@ class ScannerPage(tk.Frame):
 
             # ── Timeout / no finger: loop immediately, no reinit ──────────────
             if not ok or template is None:
-                time.sleep(0.05)   # tiny yield — prevents tight spin on fast errors
+                time.sleep(0.5)   # back off to prevent tight spin on fast errors and console spam
                 continue
+
 
             # ── Real scan captured ────────────────────────────────────────────
             ts    = datetime.now().strftime("%H:%M:%S")
             match = self._find_match(template)
 
             if match:
-                self.after(0, self._ui_success, match, ts, quality)
-                db.log_attendance(match["emp_id"], match["name"], "check_in", quality)
-                self._api_punch(match, ts)
+                # 1. Sync with server first (synchronously in background thread)
+                success, res = sso_client.send_punch_to_server(match["emp_id"])
+                
+                # Determine event type based on server response, fallback to local DB check
+                event_type = "check_in"
+                api_msg = ""
+                if success and isinstance(res, dict):
+                    server_type = res.get("punch_type")
+                    api_msg = res.get("message", "")
+                    if server_type == "out":
+                        event_type = "check_out"
+                    elif server_type == "in":
+                        event_type = "check_in"
+                    elif server_type == "already":
+                        event_type = "already"
+                else:
+                    # Offline / error fallback: local check
+                    if db.already_checked_in_today(match["emp_id"]) and not db.already_checked_out_today(match["emp_id"]):
+                        event_type = "check_out"
+                    else:
+                        event_type = "check_in"
+                        
+                    if not success and res == "Unauthorized":
+                        # Redirect to login
+                        self.after(0, self._handle_unauthorized)
+                    elif not success:
+                        api_msg = str(res)
+
+                # 2. Log in local DB (if check_in or check_out)
+                if event_type in ("check_in", "check_out"):
+                    db.log_attendance(match["emp_id"], match["name"], event_type, quality)
+
+                # Play sound feedback
+                if success and isinstance(res, dict) and res.get("punch_type") == "already":
+                    play_beep_warning()
+                elif success:
+                    play_beep_success()
+                else:
+                    play_beep_warning()
+
+                # 3. Update UI
+                self.after(0, self._ui_success, match, ts, quality, event_type, api_msg)
             else:
+                play_beep_error()
                 self.after(0, self._ui_unknown, ts)
 
             # Show result for 2 seconds
@@ -133,14 +199,9 @@ class ScannerPage(tk.Frame):
             if not self._running:
                 break
 
-            # Reinit hardware (only after a real scan)
+            # Reinit UI state (keep hardware open for high-speed scanning)
             self.after(0, self._ui_reinit)
-            self.sdk.close_device()
-            time.sleep(0.4)
-            ok2, _ = self.sdk.init_device()
-            if not ok2:
-                # Device temporarily unavailable — wait before retrying
-                time.sleep(3)
+            time.sleep(0.1)
 
     # ── Matching ──────────────────────────────────────────────────────────────
 
@@ -159,9 +220,12 @@ class ScannerPage(tk.Frame):
 
     # ── API hook ──────────────────────────────────────────────────────────────
 
-    def _api_punch(self, employee: dict, timestamp: str):
-        """TODO: Replace with your HTTP API call when ready."""
-        print(f"[API] PUNCH  {employee['emp_id']}  {employee['name']}  {timestamp}")
+    def _handle_unauthorized(self):
+        """Redirect the app to the login screen upon session expiry."""
+        try:
+            self.master.master.check_auth()
+        except Exception:
+            pass
 
     # ── UI helpers (always called via after()) ────────────────────────────────
 
@@ -172,14 +236,32 @@ class ScannerPage(tk.Frame):
         self._badge_var.set("")
         self._badge_lbl.config(fg=ACCENT)
 
-    def _ui_success(self, emp: dict, ts: str, quality: int):
-        self._canvas.set_state("success")
+    def _ui_success(self, emp: dict, ts: str, quality: int, event_type: str = "check_in", api_msg: str = ""):
+        self._canvas.set_state("success" if event_type != "already" else "idle")
         self._name_var.set(emp["name"])
-        self._sub_var.set(f"Employee  ·  {emp['emp_id']}")
-        self._badge_var.set(f"✓  PUNCHED IN   {ts}")
-        self._badge_lbl.config(fg=SUCCESS)
+        
+        if api_msg:
+            self._sub_var.set(f"{api_msg}  ·  {emp['emp_id']}")
+        else:
+            self._sub_var.set(f"Employee  ·  {emp['emp_id']}")
+        
+        if event_type == "check_in":
+            status_text = "PUNCHED IN"
+            fg_col = SUCCESS
+        elif event_type == "check_out":
+            status_text = "PUNCHED OUT"
+            fg_col = SUCCESS
+        elif event_type == "already":
+            status_text = "ALREADY RECORDED"
+            fg_col = WARNING
+        else:
+            status_text = "SUCCESS"
+            fg_col = SUCCESS
+
+        self._badge_var.set(f"✓  {status_text}   {ts}")
+        self._badge_lbl.config(fg=fg_col)
         self._last_var.set(
-            f"Last scan: {ts}  ·  {emp['name']}  ·  Quality {quality}  ✓"
+            f"Last scan: {ts}  ·  {emp['name']}  ·  {status_text}  ·  Quality {quality}  ✓"
         )
 
     def _ui_unknown(self, ts: str):
