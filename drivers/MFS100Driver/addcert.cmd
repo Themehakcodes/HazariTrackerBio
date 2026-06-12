@@ -1,0 +1,1 @@
+C:\Windows\system32\certutil.exe -addstore "TrustedPublisher" C:\Program Files\Mantra\MFS100\Driver\Driver\dvc-driver-cert.cer

@@ -1,13 +1,13 @@
-# HazariTrackerBio.spec
 # ─────────────────────────────────────────────────────────────────────────────
 # PyInstaller spec — builds a one-folder Windows EXE (32-bit Python).
 #
 # Build command:
 #   C:\Python311-32\python.exe -m PyInstaller HazariTrackerBio.spec --clean
 #
-# Prerequisites on the TARGET machine (cannot be bundled):
-#   • Mantra MFS100 driver (installs MFS100.sys kernel driver)
+# Prerequisites on the TARGET machine:
 #   • .NET Framework 4.x  (ships with Windows 10+)
+#   • Mantra MFS100 kernel driver — NOW BUNDLED in the Inno Setup installer
+#     (drivers\MFS100Driver\ — installed automatically via DPInst /LM /Q)
 # ─────────────────────────────────────────────────────────────────────────────
 
 import os, sys
@@ -15,16 +15,24 @@ from version import VERSION, APP_NAME
 
 block_cipher = None
 
-# Paths
-MANTRA_DLL = r"C:\Program Files\Mantra\MFS100\Driver\MFS100Test\MANTRA.MFS100.dll"
-IENGINE    = r"C:\Program Files\Mantra\MFS100\Driver\MFS100Test\iengine_ansi_iso.dll"
+# ── SDK DLLs sourced from the local drivers/ folder (self-contained repo) ────
+DRIVERS_DIR = os.path.join(os.path.dirname(os.path.abspath('.')), 'drivers')
+DRIVERS_DIR = os.path.join(os.path.abspath('.'), 'drivers')
+MANTRA_DLL  = os.path.join(DRIVERS_DIR, 'MANTRA.MFS100.dll')
+IENGINE     = os.path.join(DRIVERS_DIR, 'iengine_ansi_iso.dll')
+MFS100DLL   = os.path.join(DRIVERS_DIR, 'MFS100Dll.dll')
+
+# Fallback to system Mantra install if drivers/ not found on this build machine
+if not os.path.isfile(MANTRA_DLL):
+    MANTRA_DLL = r"C:\Program Files\Mantra\MFS100\Driver\MFS100Test\MANTRA.MFS100.dll"
+    IENGINE    = r"C:\Program Files\Mantra\MFS100\Driver\MFS100Test\iengine_ansi_iso.dll"
+    MFS100DLL  = r"C:\Program Files\Mantra\MFS100\Driver\MFS100Test\MFS100Dll.dll"
 
 # Collect DLLs to bundle alongside the EXE
 extra_binaries = []
-if os.path.isfile(MANTRA_DLL):
-    extra_binaries.append((MANTRA_DLL, "."))
-if os.path.isfile(IENGINE):
-    extra_binaries.append((IENGINE,    "."))
+for dll in [MANTRA_DLL, IENGINE, MFS100DLL]:
+    if os.path.isfile(dll):
+        extra_binaries.append((dll, "."))
 
 a = Analysis(
     ["app.py"],

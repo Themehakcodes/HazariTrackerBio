@@ -1,0 +1,206 @@
+; Installation INF for the Mantra MFS100 (optical fingerprint Sensor USB Driver
+; All Window OS platforms.
+
+; (c) Copyright 2015 Mantra Softech (I) Pvt. Ltd.
+
+[Version]
+Signature="$WINDOWS NT$"
+Class=USB
+ClassGUID={36FC9E60-C465-11CF-8056-444553540000}
+provider=%USB_Provider%
+CatalogFile=MFS100.cat
+DriverVer=05/05/2016,2.2.3.16
+
+[SourceDisksNames]
+1=%USB_Install%,,,
+
+[SourceDisksFiles]
+MFS100.sys = 1
+MFS100.spt = 1
+
+[DestinationDirs]
+MYUSB.Files.Ext = 10,System32\Drivers
+MYUSB.Files.Spt = 10,System32\Drivers
+
+[ControlFlags]
+ExcludeFromSelect = *
+
+[Manufacturer]
+%USB_Provider%=MFS100,NT,NTx86,NTamd64
+
+;for all platforms
+[MFS100]
+%VID_04b4&PID_8613.DeviceDesc%=MSUSB, USB\VID_04b4&PID_8613
+%VID_04b4&PID_1005.DeviceDesc%=MYUSB, USB\VID_04b4&PID_1005
+%VID_2C0F&PID_1005.DeviceDesc%=MYUSB, USB\VID_2C0F&PID_1005
+
+
+[MFS100.NT]
+%VID_04b4&PID_8613.DeviceDesc%=MSUSB, USB\VID_04b4&PID_8613
+%VID_04b4&PID_1005.DeviceDesc%=MYUSB, USB\VID_04b4&PID_1005
+%VID_2C0F&PID_1005.DeviceDesc%=MYUSB, USB\VID_2C0F&PID_1005
+
+
+[MFS100.NTx86]
+%VID_04b4&PID_8613.DeviceDesc%=MSUSB, USB\VID_04b4&PID_8613
+%VID_04b4&PID_1005.DeviceDesc%=MYUSB, USB\VID_04b4&PID_1005
+%VID_2C0F&PID_1005.DeviceDesc%=MYUSB, USB\VID_2C0F&PID_1005
+
+
+[MFS100.NTamd64]
+%VID_04b4&PID_8613.DeviceDesc%=MSUSB, USB\VID_04b4&PID_8613
+%VID_04b4&PID_1005.DeviceDesc%=MYUSB, USB\VID_04b4&PID_1005
+%VID_2C0F&PID_1005.DeviceDesc%=MYUSB, USB\VID_2C0F&PID_1005
+;==========================================================
+;for all platforms
+[MSUSB]
+CopyFiles=MYUSB.Files.Ext
+CopyFiles=MYUSB.Files.Spt
+AddReg=MYUSB.AddReg
+
+[MSUSB.HW]
+AddReg=MSUSB.AddReg.Guid
+
+[MSUSB.Services]
+Addservice = MSUSB,2,MSUSB.AddService
+
+[MSUSB.NT]
+CopyFiles=MYUSB.Files.Ext
+CopyFiles=MYUSB.Files.Spt
+AddReg=MYUSB.AddReg
+
+[MSUSB.NT.HW]
+AddReg=MSUSB.AddReg.Guid
+
+[MSUSB.NT.Services]
+Addservice = MSUSB,2,MSUSB.AddService
+
+[MSUSB.NTx86]
+CopyFiles=MYUSB.Files.Ext
+CopyFiles=MYUSB.Files.Spt
+AddReg=MYUSB.AddReg
+
+[MSUSB.NTx86.HW]
+AddReg=MSUSB.AddReg.Guid
+
+[MSUSB.NTx86.Services]
+Addservice = MSUSB,2,MSUSB.AddService
+
+[MSUSB.NTamd64]
+CopyFiles=MYUSB.Files.Ext
+CopyFiles=MYUSB.Files.Spt
+AddReg=MYUSB.AddReg
+
+[MSUSB.NTamd64.HW]
+AddReg=MSUSB.AddReg.Guid
+
+[MSUSB.NTamd64.Services]
+Addservice = MSUSB,2,MSUSB.AddService
+
+[MSUSB.AddReg.Guid]
+HKR,,DriverGUID,,%MYUSB.GUID%
+HKR,,DriverEXECSCRIPT,,%Usb.EXECSCRIPT%
+;==========================================================
+;for all platforms
+[MYUSB]
+CopyFiles=MYUSB.Files.Ext
+CopyFiles=MYUSB.Files.Spt
+AddReg=MYUSB.AddReg
+
+[MYUSB.HW]
+AddReg=MYUSB.AddReg.Guid
+
+[MYUSB.Services]
+Addservice = MYUSB,2,MYUSB.AddService
+
+[MYUSB.NT]
+CopyFiles=MYUSB.Files.Ext
+CopyFiles=MYUSB.Files.Spt
+AddReg=MYUSB.AddReg
+
+[MYUSB.NT.HW]
+AddReg=MYUSB.AddReg.Guid
+
+[MYUSB.NT.Services]
+Addservice = MYUSB,2,MYUSB.AddService
+
+[MYUSB.NTx86]
+CopyFiles=MYUSB.Files.Ext
+CopyFiles=MYUSB.Files.Spt
+AddReg=MYUSB.AddReg
+
+[MYUSB.NTx86.HW]
+AddReg=MYUSB.AddReg.Guid
+
+[MYUSB.NTx86.Services]
+Addservice = MYUSB,2,MYUSB.AddService
+
+[MYUSB.NTamd64]
+CopyFiles=MYUSB.Files.Ext
+CopyFiles=MYUSB.Files.Spt
+AddReg=MYUSB.AddReg
+
+[MYUSB.NTamd64.HW]
+AddReg=MYUSB.AddReg.Guid
+
+[MYUSB.NTamd64.Services]
+Addservice = MYUSB,2,MYUSB.AddService
+
+[MYUSB.AddReg.Guid]
+HKR,,DriverGUID,,%MYUSB.GUID%
+
+;==========================================================
+
+[MYUSB.Files.Ext]
+MFS100.sys
+
+[MYUSB.Files.Spt]
+MFS100.spt
+
+[MYUSB.AddReg]
+HKR,,DevLoader,,*ntkern
+HKR,,NTMPDriver,,MFS100.sys
+HKR,,DriverBase,,MFS100.sys
+HKR,"Parameters","MaximumTransferSize",0x10001,4096
+HKR,"Parameters","DebugLevel",0x10001,2
+HKR,,FriendlyName,,%USB_Description_MYUSB%
+
+[MYUSB.AddService]
+DisplayName    = %USB_Description_MYUSB%
+ServiceType    = 1                  ; SERVICE_KERNEL_DRIVER
+StartType      = 3                  ; SERVICE_DEMAND_START
+ErrorControl   = 1                  ; SERVICE_ERROR_NORMAL
+ServiceBinary  = %10%\System32\Drivers\MFS100.sys
+AddReg         = MYUSB.AddReg
+LoadOrderGroup = Base
+
+[MSUSB.AddReg]
+HKR,,DevLoader,,*ntkern
+HKR,,NTMPDriver,,MFS100.sys
+HKR,,DriverBase,,MFS100.sys
+HKR,"Parameters","MaximumTransferSize",0x10001,4096
+HKR,"Parameters","DebugLevel",0x10001,2
+HKR,,FriendlyName,,%USB_Description_MSUSB%
+
+[MSUSB.AddService]
+DisplayName    = %USB_Description_MSUSB%
+ServiceType    = 1                  ; SERVICE_KERNEL_DRIVER
+StartType      = 3                  ; SERVICE_DEMAND_START
+ErrorControl   = 1                  ; SERVICE_ERROR_NORMAL
+ServiceBinary  = %10%\System32\Drivers\MFS100.sys
+AddReg         = MSUSB.AddReg
+LoadOrderGroup = Base
+;===========================================================
+
+[Strings]
+USB_Provider    = "Mantra Softech (I) Pvt Ltd"
+USB_Company     = "Mantra Softech (I) Pvt Ltd"
+USB_Description_MYUSB = "MFS100 USB Fingerprint Sensor Driver "
+USB_Description_MSUSB = "MFS100 USB Fingerprint Sensor Driver"
+USB_Install     = "Mantra MFS100 Driver Installation Disk"
+VID_2C0F&PID_1005.DeviceDesc="MFS100"
+VID_04B4&PID_1005.DeviceDesc="MFS100"
+VID_04B4&PID_8613.DeviceDesc="MFS100 Kit"
+MYUSB.GUID="{AE18AA60-7F6A-11d4-97DD-00010229B959}"
+MYUSB_Unused      = "."
+USB.EXECSCRIPT="\systemroot\system32\Drivers\MFS100.spt"

@@ -3,21 +3,18 @@
 ;
 ; Builds:  HazariTrackerBio-vX.Y.Z-Setup.exe
 ;
-; Prerequisites on BUILD machine:
-;   • Inno Setup 6   https://jrsoftware.org/isinfo.php
-;   • PyInstaller build must already be done (.\build.ps1)
-;
-; Prerequisites on TARGET machine (bundled/checked by installer):
-;   • Windows 10 / 11  (x86 or x64)
-;   • .NET Framework 4.x   — ships with Windows 10+
-;   • Mantra MFS100 driver  — installer will WARN if not found
+; What this installer does automatically (no manual driver download needed):
+;   1. Installs HazariTracker Bio EXE + all bundled DLLs
+;   2. Copies Mantra SDK DLLs (MANTRA.MFS100.dll, iengine_ansi_iso.dll, MFS100Dll.dll)
+;   3. Detects Windows version + CPU arch and silently installs the correct
+;      Mantra MFS100 USB kernel driver via DPInst.exe /LM /Q
 ; ─────────────────────────────────────────────────────────────────────────────
 
 #define MyAppName      "HazariTracker Bio"
 ; MyAppVersion is injected by publish.ps1 via:  ISCC /DMyAppVersion=X.Y.Z
 ; Fallback (used if compiled manually without /D flag):
 #ifndef MyAppVersion
-  #define MyAppVersion  "1.0.0"
+  #define MyAppVersion  "1.0.1"
 #endif
 #define MyAppPublisher "Themehakcodes"
 #define MyAppURL       "https://github.com/Themehakcodes/HazariTrackerBio"
@@ -46,10 +43,9 @@ SolidCompression=yes
 ArchitecturesInstallIn64BitMode=
 ; UI
 WizardStyle=modern
-WizardResizable=yes
 ; Minimum Windows version: Windows 10
 MinVersion=10.0
-; Privileges — install per-machine so the driver DLLs land in Program Files
+; Privileges — required for kernel driver installation
 PrivilegesRequired=admin
 ; Uninstall
 UninstallDisplayIcon={app}\{#MyAppExeName}
@@ -63,46 +59,77 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon";  Description: "{cm:CreateDesktopIcon}";     GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 Name: "startupicon";  Description: "Launch at Windows startup";   GroupDescription: "Startup:";             Flags: unchecked
 
+; ─────────────────────────────────────────────────────────────────────────────
+; Files
+; ─────────────────────────────────────────────────────────────────────────────
 [Files]
 ; ── Main application (PyInstaller one-folder build) ──────────────────────────
 Source: "{#MyDistFolder}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
-; -- Mantra MFS100 DLLs from repo root (if present) ----------------------------
-Source: "MANTRA.MFS100.dll";    DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
-Source: "iengine_ansi_iso.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+; ── Mantra SDK DLLs (from bundled drivers\ folder in repo) ───────────────────
+Source: "drivers\MANTRA.MFS100.dll";    DestDir: "{app}"; Flags: ignoreversion
+Source: "drivers\iengine_ansi_iso.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "drivers\MFS100Dll.dll";        DestDir: "{app}"; Flags: ignoreversion
 
-; -- Mantra DLLs from standard Mantra install path (if on build machine) -------
-Source: "C:\Program Files\Mantra\MFS100\Driver\MFS100Test\MANTRA.MFS100.dll";    DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
-Source: "C:\Program Files\Mantra\MFS100\Driver\MFS100Test\iengine_ansi_iso.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+; ── Mantra kernel driver files — Win10 x64 ───────────────────────────────────
+Source: "drivers\MFS100Driver\Win-10-X64\*"; DestDir: "{tmp}\MFS100Driver\Win-10-X64"; Flags: ignoreversion skipifsourcedoesntexist
 
+; ── Mantra kernel driver files — Win10 x86 ───────────────────────────────────
+Source: "drivers\MFS100Driver\Win-10-X86\*"; DestDir: "{tmp}\MFS100Driver\Win-10-X86"; Flags: ignoreversion skipifsourcedoesntexist
+
+; ── Mantra kernel driver files — Win7/8 x64 ──────────────────────────────────
+Source: "drivers\MFS100Driver\Win-7-8-X64\*"; DestDir: "{tmp}\MFS100Driver\Win-7-8-X64"; Flags: ignoreversion skipifsourcedoesntexist
+
+; ── Mantra kernel driver files — Win7/8 x86 ──────────────────────────────────
+Source: "drivers\MFS100Driver\Win-7-8-X86\*"; DestDir: "{tmp}\MFS100Driver\Win-7-8-X86"; Flags: ignoreversion skipifsourcedoesntexist
+
+; ─────────────────────────────────────────────────────────────────────────────
+; Icons / Shortcuts
+; ─────────────────────────────────────────────────────────────────────────────
 [Icons]
-Name: "{group}\{#MyAppName}";               Filename: "{app}\{#MyAppExeName}"
+Name: "{group}\{#MyAppName}";               Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\icon.ico"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#MyAppName}";         Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+Name: "{autodesktop}\{#MyAppName}";         Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\icon.ico"; Tasks: desktopicon
 Name: "{userstartup}\{#MyAppName}";         Filename: "{app}\{#MyAppExeName}"; Tasks: startupicon
 
 [Registry]
-; Add to PATH so the app can be launched from cmd (optional)
 Root: HKLM; Subkey: "Software\{#MyAppPublisher}\{#MyAppName}"; ValueType: string; ValueName: "InstallPath"; ValueData: "{app}"; Flags: uninsdeletekey
 
 [Run]
+; ── Silently install MFS100 kernel driver (correct arch) after main install ──
+Filename: "{tmp}\MFS100Driver\Win-10-X64\DPInst.exe"; Parameters: "/LM /Q /F"; StatusMsg: "Installing Mantra MFS100 USB driver (64-bit)..."; Check: IsWin10AndX64; Flags: waituntilterminated runhidden
+Filename: "{tmp}\MFS100Driver\Win-10-X86\DPInst.exe"; Parameters: "/LM /Q /F"; StatusMsg: "Installing Mantra MFS100 USB driver (32-bit)..."; Check: IsWin10AndNotX64; Flags: waituntilterminated runhidden
+
+; ── Launch the app after install ─────────────────────────────────────────────
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"
 
 [Messages]
-; Custom welcome message
-WelcomeLabel2=This will install [name/ver] on your computer.%n%nMANTRA MFS100 fingerprint device driver must be installed separately before using the application.%n%nClick Next to continue.
+WelcomeLabel2=This will install [name/ver] on your computer.%n%n%nThe Mantra MFS100 fingerprint sensor driver will be installed AUTOMATICALLY — no separate download required.%n%nClick Next to continue.
 
+; ─────────────────────────────────────────────────────────────────────────────
+; Code — helper functions for arch/OS detection
+; ─────────────────────────────────────────────────────────────────────────────
 [Code]
-// ─────────────────────────────────────────────────────────────────────────────
-// Pre-install checks
-// ─────────────────────────────────────────────────────────────────────────────
+
+// Returns True if running on Windows 10/11 and 64-bit CPU
+function IsWin10AndX64(): Boolean;
+begin
+  Result := IsWin64();
+end;
+
+// Returns True if running on Windows 10/11 and 32-bit CPU
+function IsWin10AndNotX64(): Boolean;
+begin
+  Result := not IsWin64();
+end;
+
+// ── Pre-install check ─────────────────────────────────────────────────────────
 function InitializeSetup(): Boolean;
 var
   dotNetMsg: String;
-  driverMsg: String;
   warningMsg: String;
   showWarning: Boolean;
 begin
@@ -117,22 +144,14 @@ begin
                  'The application requires it to communicate with the Mantra MFS100 SDK.'#13#10#13#10 +
                  'Please install .NET Framework 4.8 from Microsoft before running the app.';
     showWarning := True;
-    warningMsg  := warningMsg + dotNetMsg + #13#10#13#10;
-  end;
-
-  // Check Mantra driver registry key (written by the Mantra installer)
-  if not RegKeyExists(HKLM, 'SOFTWARE\Mantra Softech India Pvt. Ltd.\MFS100') and
-     not RegKeyExists(HKLM, 'SOFTWARE\WOW6432Node\Mantra Softech India Pvt. Ltd.\MFS100') then
-  begin
-    driverMsg := 'Mantra MFS100 driver was not detected.'#13#10 +
-                 'Fingerprint scanning will NOT work until the driver is installed.'#13#10#13#10 +
-                 'Download the driver from: https://www.mantratec.com/resources/Software-Resources/MFS100-Software';
-    showWarning := True;
-    warningMsg  := warningMsg + driverMsg;
+    warningMsg  := warningMsg + dotNetMsg;
   end;
 
   if showWarning then
   begin
     MsgBox('WARNING — Missing Prerequisites:'#13#10#13#10 + warningMsg, mbInformation, MB_OK);
   end;
+
+  // NOTE: Mantra MFS100 driver is now bundled and will be installed automatically.
+  // No separate driver download is required.
 end;
