@@ -32,10 +32,11 @@ import sys
 import random
 
 # ── Constants ────────────────────────────────────────────────────────────────
-QUALITY_MIN    = 50      # reject captures below this quality (0–99)
-SECURITY_LEVEL = 5       # match security level (passed to MatchISO / MatchANSI)
-TEMPLATE_ALLOC = 2048    # max template size (informational)
-RET_SUCCESS    = 0
+QUALITY_MIN     = 50      # reject captures below this quality (0–99)
+SECURITY_LEVEL  = 5       # match security level (passed to MatchISO / MatchANSI)
+MATCH_THRESHOLD = 1400    # minimum score to consider fingerprints a match (0–10000)
+TEMPLATE_ALLOC  = 2048    # max template size (informational)
+RET_SUCCESS     = 0
 
 # ── DLL location ─────────────────────────────────────────────────────────────
 _SYSTEM_INSTALL = r"C:\Program Files\Mantra\MFS100\Driver\MFS100Test"
@@ -259,8 +260,8 @@ class MFS100:
         Returns
         -------
         (matched, score)
-          matched : True if fingerprints match
-          score   : 0 = match, positive = no-match, negative = error
+          matched : True if fingerprints match (score >= MATCH_THRESHOLD)
+          score   : Matching score (0–10000), or negative on error
         """
         if self.is_demo:
             return self._demo_match(template_a, template_b)
@@ -273,8 +274,9 @@ class MFS100:
             # MatchISO(probe, gallery, out score) → returns (ret, score)
             ret, score = self._mfs.MatchISO(arr_a, arr_b, 0)
             print(f"[MFS100] MatchISO ret={ret} score={score}")
-            # ret=0 → match; ret=1 → no-match; ret<0 → error
-            matched = (ret == RET_SUCCESS)
+            # ret=0 indicates the match operation completed successfully (no error).
+            # The match decision must be made by checking if score >= MATCH_THRESHOLD.
+            matched = (ret == RET_SUCCESS and score >= MATCH_THRESHOLD)
             return matched, score
         except Exception as exc:
             print(f"[MFS100] MatchISO raised: {exc}")
@@ -329,4 +331,5 @@ class MFS100:
 
     def _demo_match(self, a: bytes, b: bytes) -> tuple[bool, int]:
         matched = (a[:8] == b[:8])
-        return matched, (0 if matched else 1)
+        score = 10000 if matched else 0
+        return matched, score

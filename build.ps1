@@ -103,7 +103,27 @@ Write-Host "      EXE folder: $exeFolder" -ForegroundColor Green
 # ── Zip the dist folder ───────────────────────────────────────────────────────
 Write-Host "[4/4] Zipping dist folder..." -ForegroundColor Yellow
 $zipPath = Join-Path $DIST_DIR $ZIP_NAME
-Compress-Archive -Path "$exeFolder\*" -DestinationPath $zipPath -Force
+$maxRetries = 5
+$retryCount = 0
+$zipped = $false
+
+while (-not $zipped -and $retryCount -lt $maxRetries) {
+    try {
+        $retryCount++
+        if ($retryCount -gt 1) {
+            Write-Host "      Retrying zip compression (attempt $retryCount of $maxRetries)..." -ForegroundColor Yellow
+            Start-Sleep -Seconds 3
+        } else {
+            Start-Sleep -Seconds 3  # Wait for indexer / Defender to finish scanning newly built files
+        }
+        Compress-Archive -Path "$exeFolder\*" -DestinationPath $zipPath -Force
+        $zipped = $true
+    } catch {
+        if ($retryCount -eq $maxRetries) {
+            throw $_
+        }
+    }
+}
 $sizeMB = [math]::Round((Get-Item $zipPath).Length / 1MB, 1)
 Write-Host "      Created: $ZIP_NAME  ($sizeMB MB)" -ForegroundColor Green
 
