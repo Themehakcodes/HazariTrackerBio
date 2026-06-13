@@ -20,6 +20,7 @@ class EnrollPage(tk.Frame):
         super().__init__(master, bg=BG_BASE, **kw)
         self.sdk = sdk
         self._scanning = False
+        self._sync_in_progress = False
         self._build()
 
     # ── Layout ────────────────────────────────────────────────────────────────
@@ -47,8 +48,9 @@ class EnrollPage(tk.Frame):
         tk.Checkbutton(left, text="Re-enroll (overwrite existing fingerprint)",
                        variable=self._re_enroll,
                        bg=BG_SURFACE, fg=TEXT_SECONDARY,
-                       selectcolor=BG_ELEVATED,
+                       selectcolor=BG_INPUT,
                        activebackground=BG_SURFACE,
+                       activeforeground=TEXT_SECONDARY,
                        font=FONT_SMALL, cursor="hand2").pack(anchor="w", pady=(PAD_SM, 0))
 
         ttk.Separator(left, orient="horizontal").pack(fill="x", pady=PAD_MD)
@@ -56,17 +58,16 @@ class EnrollPage(tk.Frame):
         # Buttons
         row = tk.Frame(left, bg=BG_SURFACE)
         row.pack(fill="x")
-        self._btn = tk.Button(row, text="🖐  Start Fingerprint Scan",
-                              bg=ACCENT, fg=TEXT_PRIMARY, font=FONT_H3,
-                              activebackground=ACCENT_HOVER,
-                              activeforeground=TEXT_PRIMARY,
-                              relief="flat", bd=0, padx=PAD_MD, pady=PAD_SM,
-                              cursor="hand2", command=self._start_scan)
+        
+        self._btn = self._create_hover_btn(row, "🖐  Start Fingerprint Scan",
+                                           ACCENT, TEXT_PRIMARY, self._start_scan,
+                                           hover_bg=ACCENT_HOVER)
         self._btn.pack(side="left", padx=(0, PAD_SM))
-        tk.Button(row, text="Clear", bg=BG_ELEVATED, fg=TEXT_PRIMARY,
-                  font=FONT_H3, relief="flat", bd=0,
-                  padx=PAD_MD, pady=PAD_SM,
-                  cursor="hand2", command=self._clear).pack(side="left")
+        
+        clear_btn = self._create_hover_btn(row, "Clear",
+                                            BG_ELEVATED, TEXT_PRIMARY, self._clear,
+                                            hover_bg="#2F2F2F")
+        clear_btn.pack(side="left")
 
         # Status
         self._status_var = tk.StringVar(value="")
@@ -90,19 +91,44 @@ class EnrollPage(tk.Frame):
         right.pack(side="right", fill="both", expand=True,
                    padx=(PAD_SM, PAD_MD), pady=PAD_MD)
 
-        tk.Label(right, text="Fingerprint", font=FONT_H3,
+        tk.Label(right, text="Fingerprint Status", font=FONT_H3,
                  bg=BG_BASE, fg=TEXT_SECONDARY).pack()
 
         self._ring = _SmallRing(right)
         self._ring.pack(pady=(PAD_SM, PAD_MD))
 
-        # Enrolled employee list
-        tk.Label(right, text="Enrolled Employees",
+        # Header for Enrolled Employees with title and refresh button!
+        header_row = tk.Frame(right, bg=BG_BASE)
+        header_row.pack(fill="x", anchor="w", pady=(PAD_MD, 0))
+        
+        tk.Label(header_row, text="Enrolled Employees",
                  font=FONT_H3, bg=BG_BASE,
-                 fg=TEXT_SECONDARY).pack(anchor="w")
+                 fg=TEXT_SECONDARY).pack(side="left")
+                 
+        self._refresh_btn = tk.Button(header_row, text=" ⟳ ", font=FONT_BODY,
+                                      bg=BG_BASE, fg=TEXT_SECONDARY,
+                                      activebackground=BG_ELEVATED,
+                                      activeforeground=TEXT_PRIMARY,
+                                      relief="flat", bd=0, cursor="hand2",
+                                      command=self._manual_local_refresh)
+        self._refresh_btn.pack(side="left", padx=(PAD_SM, 0))
+        self._refresh_btn.bind("<Enter>", lambda e: self._refresh_btn.config(fg=ACCENT))
+        self._refresh_btn.bind("<Leave>", lambda e: self._refresh_btn.config(fg=TEXT_SECONDARY))
+
+        # Status label for animated spinner next to the refresh icon
+        self._refresh_status_lbl = tk.Label(header_row, text="", font=FONT_SMALL,
+                                            bg=BG_BASE, fg=ACCENT)
+        self._refresh_status_lbl.pack(side="left", padx=(PAD_MD, 0))
+
+        # Create a frame with 1px border to wrap Treeview beautifully
+        tree_border = tk.Frame(right, bg=BORDER, bd=0, padx=1, pady=1)
+        tree_border.pack(fill="both", expand=True, pady=(PAD_SM, PAD_SM))
+
+        tree_frame = tk.Frame(tree_border, bg=BG_SURFACE)
+        tree_frame.pack(fill="both", expand=True)
 
         cols = ("emp_id", "name", "dept", "enrolled")
-        self._tree = ttk.Treeview(right, columns=cols, show="headings",
+        self._tree = ttk.Treeview(tree_frame, columns=cols, show="headings",
                                   height=10, selectmode="browse")
         for col, w, label in [
             ("emp_id",   70,  "ID"),
@@ -113,7 +139,7 @@ class EnrollPage(tk.Frame):
             self._tree.heading(col, text=label)
             self._tree.column(col, width=w, anchor="w")
 
-        sb = ttk.Scrollbar(right, orient="vertical",
+        sb = ttk.Scrollbar(tree_frame, orient="vertical",
                            command=self._tree.yview)
         self._tree.configure(yscrollcommand=sb.set)
         self._tree.pack(side="left", fill="both", expand=True)
@@ -121,16 +147,49 @@ class EnrollPage(tk.Frame):
 
         self._tree.bind("<<TreeviewSelect>>", self._on_tree_select)
 
-        # Delete button
-        tk.Button(right, text="✕  Remove Selected",
-                  bg=DANGER, fg=TEXT_PRIMARY, font=FONT_SMALL,
-                  relief="flat", bd=0, padx=PAD_SM, pady=4,
-                  cursor="hand2",
-                  command=self._delete_selected).pack(pady=(PAD_SM, 0))
+        # Action buttons row
+        btn_row = tk.Frame(right, bg=BG_BASE)
+        btn_row.pack(fill="x", pady=(PAD_SM, 0))
+
+        self._sync_btn = self._create_hover_btn(btn_row, "🔄  Sync from Cloud",
+                                                ACCENT, TEXT_PRIMARY, self._sync_from_cloud,
+                                                hover_bg=ACCENT_HOVER, font=FONT_SMALL,
+                                                padx=PAD_SM, pady=6)
+        self._sync_btn.pack(side="left")
+
+        remove_btn = self._create_hover_btn(btn_row, "✕  Remove Selected",
+                                             DANGER, TEXT_PRIMARY, self._delete_selected,
+                                             hover_bg="#EF5F5F", font=FONT_SMALL,
+                                             padx=PAD_SM, pady=6)
+        remove_btn.pack(side="right")
 
         self.refresh()
 
     # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def _create_hover_btn(self, parent, text, bg, fg, command, hover_bg=None, font=FONT_H3, padx=PAD_MD, pady=PAD_SM) -> tk.Button:
+        btn = tk.Button(parent, text=text, bg=bg, fg=fg, font=font,
+                        activebackground=hover_bg or bg,
+                        activeforeground=fg,
+                        relief="flat", bd=0, padx=padx, pady=pady,
+                        cursor="hand2", command=command)
+        
+        h_bg = hover_bg or bg
+        if not hover_bg:
+            if bg == ACCENT:
+                h_bg = ACCENT_HOVER
+            elif bg == DANGER:
+                h_bg = "#EF5F5F"
+            elif bg == BG_ELEVATED:
+                h_bg = "#2F2F2F"
+            elif bg == BG_SURFACE:
+                h_bg = BG_ELEVATED
+            else:
+                h_bg = bg
+                
+        btn.bind("<Enter>", lambda e: btn.config(bg=h_bg))
+        btn.bind("<Leave>", lambda e: btn.config(bg=bg))
+        return btn
 
     def _on_tree_select(self, event):
         sel = self._tree.selection()
@@ -164,19 +223,64 @@ class EnrollPage(tk.Frame):
                 enrolled_status,
             ))
 
-    def _field(self, parent, label: str, ph: str = "") -> ttk.Entry:
+    def _manual_local_refresh(self):
+        self.refresh()
+        # Trigger a cloud sync in the background and show the animated spinner
+        if sso_client.is_authenticated():
+            if self._sync_in_progress:
+                return
+                
+            self._sync_in_progress = True
+            self._refresh_btn.config(state="disabled", text=" ⏳ ")
+            self._animate_spinner()
+            
+            def run_sync():
+                ok, _ = sso_client.sync_employees_from_server()
+                def on_sync_done():
+                    self._sync_in_progress = False
+                    self.refresh()
+                self.after(0, on_sync_done)
+            threading.Thread(target=run_sync, daemon=True).start()
+
+    def _field(self, parent, label: str, ph: str = "") -> tk.Entry:
         tk.Label(parent, text=label, font=FONT_SMALL,
-                 bg=BG_SURFACE, fg=TEXT_SECONDARY).pack(anchor="w", pady=(PAD_SM, 2))
-        e = ttk.Entry(parent, font=FONT_BODY)
-        e.pack(fill="x", ipady=6)
+                 bg=BG_SURFACE, fg=TEXT_SECONDARY).pack(anchor="w", pady=(PAD_SM, 4))
+        
+        # Border wrapper frame to create a 1px border
+        wrapper = tk.Frame(parent, bg=BORDER, bd=0, padx=1, pady=1)
+        wrapper.pack(fill="x", pady=(0, PAD_MD))
+        
+        inner = tk.Frame(wrapper, bg=BG_INPUT, bd=0, padx=8, pady=6)
+        inner.pack(fill="x")
+        
+        e = tk.Entry(inner, font=FONT_BODY, bg=BG_INPUT, fg=TEXT_PRIMARY,
+                     insertbackground=TEXT_PRIMARY, bd=0, relief="flat",
+                     highlightthickness=0)
+        e.pack(fill="x")
+        
+        # Focus border change animation!
+        def on_focus_in(event, w=wrapper, entry=e):
+            w.config(bg=ACCENT)
+            if entry.get() == ph:
+                entry.delete(0, "end")
+                entry.config(foreground=TEXT_PRIMARY)
+                
+        def on_focus_out(event, w=wrapper, entry=e):
+            w.config(bg=BORDER)
+            if not entry.get():
+                entry.insert(0, ph)
+                entry.config(foreground=TEXT_DISABLED)
+
+        e.bind("<FocusIn>", on_focus_in)
+        e.bind("<FocusOut>", on_focus_out)
+        
         if ph:
             e.insert(0, ph)
             e.config(foreground=TEXT_DISABLED)
-            e.bind("<FocusIn>",  lambda _, en=e, p=ph: (en.delete(0, "end"), en.config(foreground=TEXT_PRIMARY)) if en.get() == p else None)
-            e.bind("<FocusOut>", lambda _, en=e, p=ph: (en.insert(0, p), en.config(foreground=TEXT_DISABLED)) if not en.get() else None)
+            
         return e
 
-    def _get(self, e: ttk.Entry, ph: str) -> str:
+    def _get(self, e: tk.Entry, ph: str) -> str:
         v = e.get().strip()
         return "" if v == ph else v
 
@@ -201,6 +305,45 @@ class EnrollPage(tk.Frame):
                                f"Remove employee {emp_id}? This cannot be undone."):
             db.delete_employee(emp_id)
             self.refresh()
+
+    def _sync_from_cloud(self):
+        if not sso_client.is_authenticated():
+            messagebox.showwarning("Sync Warning", "Please configure Cloud Sync first.")
+            return
+
+        if self._sync_in_progress:
+            return
+
+        self._sync_in_progress = True
+        self._sync_btn.config(state="disabled", text="⏳  Syncing…")
+        self._refresh_btn.config(state="disabled", text=" ⏳ ")
+        self._animate_spinner()
+        
+        def run_sync():
+            ok, msg = sso_client.sync_employees_from_server()
+            def on_sync_done():
+                self._sync_in_progress = False
+                self._sync_btn.config(state="normal", text="🔄  Sync from Cloud")
+                if ok:
+                    messagebox.showinfo("Sync Success", msg)
+                    self.refresh()
+                else:
+                    messagebox.showerror("Sync Error", msg)
+            self.after(0, on_sync_done)
+
+        threading.Thread(target=run_sync, daemon=True).start()
+
+    def _animate_spinner(self, frame_idx=0):
+        if not self._sync_in_progress:
+            self._refresh_btn.config(state="normal", text=" ⟳ ")
+            self._refresh_status_lbl.config(text="")
+            return
+            
+        spinner_chars = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        char = spinner_chars[frame_idx % len(spinner_chars)]
+        self._refresh_status_lbl.config(text=f"{char} Syncing cloud templates...")
+        
+        self.after(80, lambda: self._animate_spinner(frame_idx + 1))
 
     # ── Scan ──────────────────────────────────────────────────────────────────
 

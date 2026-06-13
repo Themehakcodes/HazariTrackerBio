@@ -334,9 +334,9 @@ def sync_employees_from_server():
             import base64
             synced_count = 0
             for emp in employees:
-                emp_id = emp.get("employee_id")
-                name = emp.get("name")
-                dept = emp.get("department", "")
+                emp_id = str(emp.get("employee_id") or "").strip()
+                name = str(emp.get("name") or "").strip()
+                dept = str(emp.get("department") or "").strip()
                 template_str = emp.get("fingerprint_template")
 
                 if not emp_id or not name:

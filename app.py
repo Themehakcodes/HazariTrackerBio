@@ -23,12 +23,13 @@ from pages.enroll  import EnrollPage
 from pages.reports import ReportsPage
 from pages.sso     import SSOPage, SSOLoginFrame
 import sso_client
+from version import VERSION as APP_VERSION
 
 
 class HazariTrackerApp(tk.Tk):
 
     APP_TITLE = "HazariTracker Bio"
-    VERSION   = "2.0.0"
+    VERSION   = APP_VERSION
 
     def __init__(self):
         super().__init__()
@@ -61,6 +62,11 @@ class HazariTrackerApp(tk.Tk):
             self._show_login_screen()
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # Start auto-update check in background after window initializes
+        from updater import AutoUpdater
+        self.updater = AutoUpdater(self)
+        self.after(2000, self.updater.start_check)
 
     # ── Build ─────────────────────────────────────────────────────────────────
 
@@ -195,24 +201,39 @@ class HazariTrackerApp(tk.Tk):
         self._build()
         self._update_cloud_badge()
 
-        # Start employee template synchronization in background thread
-        def sync_worker():
-            print("[Sync] Starting employee template synchronization...")
-            ok, msg = sso_client.sync_employees_from_server()
-            if ok:
-                print(f"[Sync] {msg}")
-                if hasattr(self, "_enroll_page") and self._enroll_page:
-                    self.after(0, self._enroll_page.refresh)
-            else:
-                print(f"[Sync] Failed: {msg}")
-        
-        threading.Thread(target=sync_worker, daemon=True).start()
+        # Start employee template synchronization and schedule periodic sync
+        self._run_periodic_sync()
 
         if not self.sdk.is_demo:
             self.after(250, self._init_device)
         else:
             self._update_badge(False)
             self._scanner_page.start()
+
+    def _run_periodic_sync(self):
+        if not sso_client.is_authenticated():
+            return
+        
+        def sync_worker():
+            print("[AutoSync] Running periodic employee template sync...")
+            ok, msg = sso_client.sync_employees_from_server()
+            if ok:
+                print(f"[AutoSync] {msg}")
+                if hasattr(self, "_enroll_page") and self._enroll_page:
+                    try:
+                        self.after(0, self._enroll_page.refresh)
+                    except Exception:
+                        pass
+            else:
+                print(f"[AutoSync] Failed: {msg}")
+            
+            # Reschedule in 60 seconds (60000 ms)
+            try:
+                self.after(60000, self._run_periodic_sync)
+            except Exception:
+                pass
+
+        threading.Thread(target=sync_worker, daemon=True).start()
 
     def _show_login_screen(self):
         if self._login_frame:
@@ -260,13 +281,16 @@ class HazariTrackerApp(tk.Tk):
                 self.after(3000, self._init_device)
 
     def _update_badge(self, connected: bool):
-        if self.sdk.is_demo:
-            text, col = "DEMO MODE", WARNING
-        elif connected:
-            text, col = "● MFS100 Connected", SUCCESS
-        else:
-            text, col = "○ Connect MFS100…", DANGER
-        self._badge.config(text=text, fg=col)
+        try:
+            if self.sdk.is_demo:
+                text, col = "DEMO MODE", WARNING
+            elif connected:
+                text, col = "● MFS100 Connected", SUCCESS
+            else:
+                text, col = "○ Connect MFS100…", DANGER
+            self._badge.config(text=text, fg=col)
+        except Exception:
+            pass
 
     # ── System Tray ───────────────────────────────────────────────────────────
 

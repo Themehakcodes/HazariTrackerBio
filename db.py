@@ -128,14 +128,16 @@ def delete_setting(key: str):
 
 def add_employee(emp_id: str, name: str, department: str, template: bytes | None = None) -> bool:
     """Insert a new employee. Returns False if emp_id already exists."""
+    clean_id = str(emp_id or "").strip().upper()
+    clean_name = str(name or "").strip()
+    clean_dept = str(department or "").strip()
     try:
         with _connect() as con:
             enrolled = datetime.now().isoformat(timespec="seconds") if template else None
             con.execute(
                 """INSERT INTO employees (emp_id, name, department, template, enrolled_at)
                    VALUES (?, ?, ?, ?, ?)""",
-                (emp_id.strip().upper(), name.strip(), department.strip(),
-                 template, enrolled),
+                (clean_id, clean_name, clean_dept, template, enrolled),
             )
         return True
     except sqlite3.IntegrityError:
@@ -144,32 +146,38 @@ def add_employee(emp_id: str, name: str, department: str, template: bytes | None
 
 def update_employee_details(emp_id: str, name: str, department: str):
     """Update employee name and department details."""
+    clean_id = str(emp_id or "").strip().upper()
+    clean_name = str(name or "").strip()
+    clean_dept = str(department or "").strip()
     with _connect() as con:
         con.execute(
             "UPDATE employees SET name = ?, department = ? WHERE emp_id = ?",
-            (name.strip(), department.strip(), emp_id.strip().upper()),
+            (clean_name, clean_dept, clean_id),
         )
 
 
 def update_template(emp_id: str, template: bytes):
     """Overwrite the stored fingerprint template for an existing employee."""
+    clean_id = str(emp_id or "").strip().upper()
     now_str = datetime.now().isoformat(timespec="seconds")
     with _connect() as con:
         con.execute(
             "UPDATE employees SET template = ?, enrolled_at = ? WHERE emp_id = ?",
-            (template, now_str, emp_id.strip().upper()),
+            (template, now_str, clean_id),
         )
 
 
 def delete_employee(emp_id: str):
+    clean_id = str(emp_id or "").strip().upper()
     with _connect() as con:
-        con.execute("DELETE FROM employees WHERE emp_id = ?", (emp_id.strip().upper(),))
+        con.execute("DELETE FROM employees WHERE emp_id = ?", (clean_id,))
 
 
 def get_employee(emp_id: str) -> sqlite3.Row | None:
+    clean_id = str(emp_id or "").strip().upper()
     with _connect() as con:
         return con.execute(
-            "SELECT * FROM employees WHERE emp_id = ?", (emp_id.strip().upper(),)
+            "SELECT * FROM employees WHERE emp_id = ?", (clean_id,)
         ).fetchone()
 
 
