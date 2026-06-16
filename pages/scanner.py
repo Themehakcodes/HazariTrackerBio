@@ -28,6 +28,9 @@ import sso_client
 from mfs100_sdk import MFS100
 from theme import *
 
+# Cooldown period (in seconds) to prevent accidental double punches
+PUNCH_COOLDOWN_SECONDS = 300
+
 def play_beep_success():
     try:
         # A nice clean high double beep
@@ -59,6 +62,7 @@ class ScannerPage(tk.Frame):
         self.sdk      = sdk
         self._running = False
         self._thread  = None
+        self._last_punch_time = {}  # Keep track of last punch timestamp per employee ID
         self._build()
 
     # ── Layout ────────────────────────────────────────────────────────────────
@@ -147,8 +151,33 @@ class ScannerPage(tk.Frame):
             match = self._find_match(template)
 
             if match:
+                emp_id = match["emp_id"]
+                name   = match["name"]
+                now    = time.time()
+
+                # Prevent instant double-punching (cooldown check)
+                last_punch = self._last_punch_time.get(emp_id, 0.0)
+                elapsed = now - last_punch
+                if elapsed < PUNCH_COOLDOWN_SECONDS:
+                    play_beep_warning()
+                    remaining = int(PUNCH_COOLDOWN_SECONDS - elapsed)
+                    rem_min = remaining // 60
+                    rem_sec = remaining % 60
+                    if rem_min > 0:
+                        api_msg = f"Recent punch. Wait {rem_min}m {rem_sec}s."
+                    else:
+                        api_msg = f"Recent punch. Wait {rem_sec}s."
+                    
+                    self.after(0, self._ui_success, match, ts, quality, "already", api_msg)
+                    time.sleep(2)
+                    if not self._running:
+                        break
+                    self.after(0, self._ui_reinit)
+                    time.sleep(0.1)
+                    continue
+
                 # 1. Sync with server first (synchronously in background thread)
-                success, res = sso_client.send_punch_to_server(match["emp_id"])
+                success, res = sso_client.send_punch_to_server(emp_id)
                 
                 # Determine event type based on server response, fallback to local DB check
                 event_type = "check_in"
@@ -164,7 +193,7 @@ class ScannerPage(tk.Frame):
                         event_type = "already"
                 else:
                     # Offline / error fallback: local check
-                    if db.already_checked_in_today(match["emp_id"]) and not db.already_checked_out_today(match["emp_id"]):
+                    if db.already_checked_in_today(emp_id) and not db.already_checked_out_today(emp_id):
                         event_type = "check_out"
                     else:
                         event_type = "check_in"
@@ -177,7 +206,9 @@ class ScannerPage(tk.Frame):
 
                 # 2. Log in local DB (if check_in or check_out)
                 if event_type in ("check_in", "check_out"):
-                    db.log_attendance(match["emp_id"], match["name"], event_type, quality)
+                    db.log_attendance(emp_id, name, event_type, quality)
+                    # Mark successful punch timestamp to start cooldown
+                    self._last_punch_time[emp_id] = now
 
                 # Play sound feedback
                 if success and isinstance(res, dict) and res.get("punch_type") == "already":
