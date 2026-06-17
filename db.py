@@ -11,16 +11,25 @@ Tables
 
 import sqlite3
 import os
+import contextlib
 from datetime import datetime, date
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "hazari_bio.db")
 
 
-def _connect() -> sqlite3.Connection:
-    con = sqlite3.connect(DB_PATH)
+@contextlib.contextmanager
+def _connect():
+    con = sqlite3.connect(DB_PATH, timeout=30.0)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA foreign_keys = ON")
-    return con
+    try:
+        yield con
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
 
 
 def init_db():

@@ -124,27 +124,70 @@ class ScannerPage(tk.Frame):
         """
         Optimised loop:
           - AutoCapture blocks for up to 5 s internally.
-          - No reinit on timeout — only reinit after a REAL scan.
-          - Small yield (0.05 s) on errors to avoid CPU spin.
+          - Reinit after a successful capture, as the hardware needs a reset between scans.
+          - Check connection on failure and attempt automatic reconnection.
         """
         while self._running:
             self.after(0, self._ui_scanning)
 
             try:
                 ok, quality, template = self.sdk.capture_iso_template(timeout_ms=1000)
+                device_error = False
             except Exception as exc:
                 print(f"[Scanner] capture error: {exc}")
-                time.sleep(0.5)
-                continue
+                ok = False
+                template = None
+                device_error = True
 
             if not self._running:
                 break
 
-            # ── Timeout / no finger: loop immediately, no reinit ──────────────
+            # ── Check for disconnection or hardware failure ──────────────
             if not ok or template is None:
-                time.sleep(0.5)   # back off to prevent tight spin on fast errors and console spam
-                continue
+                is_connected = False
+                try:
+                    is_connected = self.sdk.is_connected()
+                except Exception:
+                    pass
 
+                if not self.sdk.is_demo and (not is_connected or device_error):
+                    print("[Scanner] Device disconnected or errored! Attempting recovery...")
+                    self.after(0, lambda: self.master.master._update_badge(False))
+                    self.after(0, self._ui_disconnected)
+
+                    # Poll until device is reconnected
+                    while self._running:
+                        time.sleep(1.0)
+                        try:
+                            if self.sdk.is_connected():
+                                break
+                        except Exception:
+                            pass
+                    
+                    if not self._running:
+                        break
+
+                    print("[Scanner] Device physically reconnected. Re-initializing...")
+                    try:
+                        self.sdk.close_device()
+                        time.sleep(0.5)
+                        init_ok, init_msg = self.sdk.init_device()
+                        if init_ok:
+                            print("[Scanner] Re-initialization successful.")
+                            self.after(0, lambda: self.master.master._update_badge(True))
+                            self.after(0, self._ui_scanning)
+                            continue
+                        else:
+                            print(f"[Scanner] Re-initialization failed: {init_msg}")
+                    except Exception as e:
+                        print(f"[Scanner] Re-initialization error: {e}")
+                    
+                    time.sleep(1.0)
+                    continue
+                else:
+                    # Normal timeout (no finger), back off briefly and continue
+                    time.sleep(0.5)
+                    continue
 
             # ── Real scan captured ────────────────────────────────────────────
             ts    = datetime.now().strftime("%H:%M:%S")
@@ -170,6 +213,16 @@ class ScannerPage(tk.Frame):
                     
                     self.after(0, self._ui_success, match, ts, quality, "already", api_msg)
                     time.sleep(2)
+                    
+                    # Reinit hardware even for cooldown capture, to reset state
+                    if not self.sdk.is_demo:
+                        try:
+                            self.sdk.close_device()
+                            time.sleep(0.4)
+                            self.sdk.init_device()
+                        except Exception:
+                            pass
+                            
                     if not self._running:
                         break
                     self.after(0, self._ui_reinit)
@@ -226,6 +279,15 @@ class ScannerPage(tk.Frame):
 
             # Show result for 2 seconds
             time.sleep(2)
+
+            # Re-init hardware after capture to reset state and leave it ready
+            if not self.sdk.is_demo:
+                try:
+                    self.sdk.close_device()
+                    time.sleep(0.4)
+                    self.sdk.init_device()
+                except Exception as exc:
+                    print(f"[Scanner] Re-init device failed: {exc}")
 
             if not self._running:
                 break
@@ -308,6 +370,14 @@ class ScannerPage(tk.Frame):
         self._name_var.set("Reinitialising scanner…")
         self._sub_var.set("")
         self._badge_var.set("")
+
+    def _ui_disconnected(self):
+        self._canvas.set_state("failure")
+        self._name_var.set("Scanner Disconnected")
+        self._sub_var.set("Please check the USB connection")
+        self._badge_var.set("✗  DEVICE OFFLINE")
+        self._badge_lbl.config(fg=DANGER)
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
