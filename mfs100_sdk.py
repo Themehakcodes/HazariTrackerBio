@@ -22,9 +22,15 @@ Public API (same interface as the old ctypes wrapper)
 ──────────────────────────────────────────────────────
   sdk = MFS100()
   ok, msg = sdk.init_device()
-  ok, quality, template = sdk.capture_iso_template(timeout_ms=10_000)
+  ok, quality, template, is_timeout = sdk.capture_iso_template(timeout_ms=10_000)
   matched, score = sdk.match_iso(template_a, template_b)
   sdk.close_device()
+
+is_timeout
+──────────
+  capture_iso_template returns a 4th value: is_timeout.
+  True  → no finger was placed within timeout_ms — completely normal, not an error.
+  False → a real device / DLL error occurred and recovery may be needed.
 """
 
 import os
@@ -37,6 +43,17 @@ SECURITY_LEVEL  = 5       # match security level (passed to MatchISO / MatchANSI
 MATCH_THRESHOLD = 1400    # minimum score to consider fingerprints a match (0–10000)
 TEMPLATE_ALLOC  = 2048    # max template size (informational)
 RET_SUCCESS     = 0
+
+# Mantra SDK return codes that mean "no finger placed — timed out", i.e. normal.
+# These must NOT be counted as device errors in the scan loop.
+# Source: Mantra MFS100 SDK documentation & observed values.
+# If you see a new ret code on idle, add it here.
+_TIMEOUT_RET_CODES = {
+    -3,    # AutoCapture standard timeout
+    1,     # Some SDK versions return 1 on timeout
+    101,   # "No Finger" status in some firmware versions
+    104,   # "Finger Not Placed" in extended status
+}
 
 # ── DLL location ─────────────────────────────────────────────────────────────
 _SYSTEM_INSTALL = r"C:\Program Files\Mantra\MFS100\Driver\MFS100Test"
@@ -190,19 +207,24 @@ class MFS100:
         self,
         timeout_ms: int = 10_000,
         min_quality: int = QUALITY_MIN,
-    ) -> tuple[bool, int, bytes | None]:
+    ) -> tuple[bool, int, bytes | None, bool]:
         """
         Wait for a finger, capture raw image, extract ISO template.
 
         Returns
         -------
-        (success, quality, iso_template_bytes)
+        (success, quality, iso_template_bytes, is_timeout)
           success           : True if capture + extraction succeeded
-          quality           : 0-100 score (0 means failure / no image)
+          quality           : 0–100 score (0 means failure / no image)
           iso_template_bytes: bytes object or None on failure
+          is_timeout        : True when no finger was placed (normal) —
+                              caller must NOT count this as a device error
         """
         if self.is_demo:
-            return self._demo_capture()
+            ok, q, t = self._demo_capture()
+            # _demo_capture returns (False, 0, None) for a simulated timeout
+            is_timeout = (not ok and t is None)
+            return ok, q, t, is_timeout
 
         try:
             # AutoCapture: ref param is returned as second element of tuple
@@ -211,14 +233,20 @@ class MFS100:
             )
         except Exception as exc:
             print(f"[MFS100] AutoCapture raised: {exc}")
-            return False, 0, None
+            return False, 0, None, False   # real exception → is_timeout=False
 
         if ret != RET_SUCCESS:
-            msg = self._safe_error_msg(ret)
-            print(f"[MFS100] AutoCapture failed: {ret} — {msg}")
-            # quality may still be valid even on timeout/low-quality
-            quality = self._safe_quality(fd)
-            return False, quality, None
+            is_timeout = ret in _TIMEOUT_RET_CODES
+            quality    = self._safe_quality(fd)
+            if is_timeout:
+                # Normal idle — no finger placed.  Only log at high verbosity.
+                # Uncomment next line temporarily to discover your SDK's timeout code:
+                # print(f"[MFS100] DEBUG timeout ret={ret}")
+                pass
+            else:
+                msg = self._safe_error_msg(ret)
+                print(f"[MFS100] AutoCapture ERROR ret={ret} — {msg}")
+            return False, quality, None, is_timeout
 
         quality = self._safe_quality(fd)
 
@@ -227,14 +255,14 @@ class MFS100:
             iso_bytes = bytes(fd.ISOTemplate)
         except Exception as exc:
             print(f"[MFS100] ISOTemplate conversion failed: {exc}")
-            return False, quality, None
+            return False, quality, None, False
 
         if not iso_bytes:
             print("[MFS100] ISOTemplate is empty")
-            return False, quality, None
+            return False, quality, None, False
 
         print(f"[MFS100] Capture OK  quality={quality}  ISO={len(iso_bytes)} bytes")
-        return True, quality, iso_bytes
+        return True, quality, iso_bytes, False
 
     def get_live_frame(self) -> bytes | None:
         """
@@ -297,8 +325,13 @@ class MFS100:
         self,
         timeout_ms: int = 10_000,
     ) -> tuple[bool, int, bytes | None]:
-        """Alias for capture_iso_template — keeps enroll.py interface stable."""
-        return self.capture_iso_template(timeout_ms=timeout_ms)
+        """Alias for capture_iso_template — keeps enroll.py interface stable.
+
+        Strips the 4th `is_timeout` value so callers that unpack (ok, quality, template)
+        are not broken.  Only scanner._loop needs the full 4-tuple.
+        """
+        ok, quality, template, _is_timeout = self.capture_iso_template(timeout_ms=timeout_ms)
+        return ok, quality, template
 
     # =========================================================================
     # Internal helpers
@@ -325,6 +358,12 @@ class MFS100:
     # =========================================================================
 
     def _demo_capture(self) -> tuple[bool, int, bytes]:
+        # Simulate the hardware blocking for ~1 second (as real AutoCapture does).
+        # 90 % of the time: no finger placed — return timeout.
+        # 10 % of the time: simulate a finger scan.
+        time.sleep(1.0)
+        if random.random() < 0.90:
+            return False, 0, None  # simulated timeout (is_timeout handled by caller)
         quality  = random.randint(70, 95)
         template = bytes(random.getrandbits(8) for _ in range(1566))
         return True, quality, template

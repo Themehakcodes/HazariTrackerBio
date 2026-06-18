@@ -5,13 +5,18 @@ Auto-continuous fingerprint scanner.
 
 Performance design
 ──────────────────
-  • AutoCapture(timeout=5000) already blocks for 5 s waiting for a finger.
+  • AutoCapture(timeout=1000) blocks for 1 s waiting for a finger.
     On timeout (no finger) we just loop — NO reinit. Reinit only happens
     after a successful capture, as the hardware needs a reset between scans.
   • Background thread yields with time.sleep(0.05) on error paths to avoid
     tight CPU-spin on repeated failures.
   • All UI updates go via self.after(0, …) — never touch widgets from the
     background thread.
+  • A consecutive-error counter forces a full device reinit after
+    MAX_CONSEC_ERRORS failures in a row — this handles the case where
+    IsConnected() returns True but the DLL is internally stuck/frozen.
+  • A watchdog timer (via tkinter after) restarts the loop thread if it
+    dies unexpectedly (e.g. uncaught exception that slipped through).
 
 API hook: override _api_punch() with your HTTP call when ready.
 """
@@ -30,6 +35,13 @@ from theme import *
 
 # Cooldown period (in seconds) to prevent accidental double punches
 PUNCH_COOLDOWN_SECONDS = 300
+
+# After this many consecutive capture failures, force a full device reinit
+# even if IsConnected() says True (handles internally-stuck DLL state)
+MAX_CONSEC_ERRORS = 5
+
+# How often the watchdog checks that the scan thread is still alive (ms)
+WATCHDOG_INTERVAL_MS = 10_000
 
 def play_beep_success():
     try:
@@ -59,10 +71,12 @@ class ScannerPage(tk.Frame):
 
     def __init__(self, master, sdk: MFS100, **kw):
         super().__init__(master, bg=BG_BASE, **kw)
-        self.sdk      = sdk
-        self._running = False
-        self._thread  = None
+        self.sdk             = sdk
+        self._running        = False
+        self._thread         = None
+        self._consec_errors  = 0   # consecutive capture-error counter
         self._last_punch_time = {}  # Keep track of last punch timestamp per employee ID
+        self._watchdog_id    = None # tkinter after() ID for thread watchdog
         self._build()
 
     # ── Layout ────────────────────────────────────────────────────────────────
@@ -108,86 +122,159 @@ class ScannerPage(tk.Frame):
 
     def start(self):
         """Start continuous scan loop. Safe to call multiple times."""
-        if self._running:
-            return
-        self._running = True
-        self._thread  = threading.Thread(target=self._loop, daemon=True)
+        if self._running and self._thread and self._thread.is_alive():
+            return  # already running fine
+
+        # If old thread is still alive but _running was cleared, let it die
+        if self._thread and self._thread.is_alive():
+            self._running = False
+            self._thread.join(timeout=3.0)  # wait up to 3 s
+
+        self._running       = True
+        self._consec_errors = 0
+        self._thread        = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
+        self._schedule_watchdog()
 
     def stop(self):
         """Signal the loop to exit on next iteration."""
         self._running = False
+        self._cancel_watchdog()
+
+    # ── Watchdog (UI thread) ──────────────────────────────────────────────────
+
+    def _schedule_watchdog(self):
+        """Schedule the next watchdog tick (runs on the UI/main thread)."""
+        self._cancel_watchdog()
+        try:
+            self._watchdog_id = self.after(WATCHDOG_INTERVAL_MS, self._watchdog_tick)
+        except Exception:
+            pass
+
+    def _cancel_watchdog(self):
+        if self._watchdog_id:
+            try:
+                self.after_cancel(self._watchdog_id)
+            except Exception:
+                pass
+            self._watchdog_id = None
+
+    def _watchdog_tick(self):
+        """
+        Called every WATCHDOG_INTERVAL_MS ms on the UI thread.
+        If the scan thread has died unexpectedly while _running is True,
+        restart it automatically.
+        """
+        if not self._running:
+            return  # we were stopped intentionally
+
+        if self._thread is None or not self._thread.is_alive():
+            print("[Scanner] Watchdog: thread died unexpectedly — restarting…")
+            self._thread        = threading.Thread(target=self._loop, daemon=True)
+            self._consec_errors = 0
+            self._thread.start()
+
+        # Reschedule
+        self._schedule_watchdog()
 
     # ── Scan loop (background thread) ─────────────────────────────────────────
 
     def _loop(self):
         """
-        Optimised loop:
-          - AutoCapture blocks for up to 5 s internally.
-          - Reinit after a successful capture, as the hardware needs a reset between scans.
-          - Check connection on failure and attempt automatic reconnection.
+        Optimised scan loop:
+          - AutoCapture blocks for 1 s internally (timeout_ms=1000).
+          - is_timeout=True  → no finger placed, completely normal.  Just loop.
+          - is_timeout=False → real device/DLL error.  Count it.
+          - After MAX_CONSEC_ERRORS real errors in a row, trigger recovery:
+              1. close_device() + init_device() up to 3 attempts.
+              2. If all 3 fail, poll every 2 s until init succeeds
+                 (handles genuine USB disconnect/reconnect).
+          - Reinit hardware ONLY after a successful capture, never after timeouts.
+          - Watchdog (started by start()) restarts this thread if it dies.
         """
+        # Show scanning state once at startup — then ONLY update on state changes.
+        self.after(0, self._ui_scanning)
+
         while self._running:
-            self.after(0, self._ui_scanning)
+            # ── Do NOT call _ui_scanning here. ──────────────────────────────
+            # The screen already shows "Waiting for finger…"
+            # Calling after(0, _ui_scanning) every iteration causes:
+            #   • unnecessary UI redraws on real hardware (every 1 s)
+            #   • rapid screen thrashing in demo mode (no hardware delay)
+            # It is re-called only after a result has been shown + reinit done.
 
             try:
-                ok, quality, template = self.sdk.capture_iso_template(timeout_ms=1000)
+                ok, quality, template, is_timeout = self.sdk.capture_iso_template(timeout_ms=1000)
                 device_error = False
             except Exception as exc:
-                print(f"[Scanner] capture error: {exc}")
-                ok = False
-                template = None
+                print(f"[Scanner] capture exception: {exc}")
+                ok, quality, template, is_timeout = False, 0, None, False
                 device_error = True
 
             if not self._running:
                 break
 
-            # ── Check for disconnection or hardware failure ──────────────
-            if not ok or template is None:
-                is_connected = False
-                try:
-                    is_connected = self.sdk.is_connected()
-                except Exception:
-                    pass
+            # ── Normal timeout: no finger placed ────────────────────────────
+            if not ok and is_timeout:
+                self._consec_errors = 0   # timeout is NOT an error — reset counter
+                # No sleep needed — AutoCapture already blocked for timeout_ms
+                continue
 
-                if not self.sdk.is_demo and (not is_connected or device_error):
-                    print("[Scanner] Device disconnected or errored! Attempting recovery...")
+            # ── Real device/DLL error ────────────────────────────────────────
+            if not ok and not is_timeout:
+                self._consec_errors += 1
+                print(f"[Scanner] Real capture error #{self._consec_errors} (device_error={device_error})")
+
+                if not self.sdk.is_demo and self._consec_errors >= MAX_CONSEC_ERRORS:
+                    print(f"[Scanner] {self._consec_errors} consecutive errors — starting recovery...")
                     self.after(0, lambda: self.master.master._update_badge(False))
                     self.after(0, self._ui_disconnected)
 
-                    # Poll until device is reconnected
-                    while self._running:
-                        time.sleep(1.0)
+                    # Step 1: try close+reinit up to 3 times (handles stuck DLL state)
+                    recovered = False
+                    for attempt in range(1, 4):
                         try:
-                            if self.sdk.is_connected():
+                            self.sdk.close_device()
+                            time.sleep(0.5)
+                            init_ok, init_msg = self.sdk.init_device()
+                            if init_ok:
+                                print(f"[Scanner] Recovery succeeded on attempt {attempt}.")
+                                self._consec_errors = 0
+                                recovered = True
+                                self.after(0, lambda: self.master.master._update_badge(True))
+                                self.after(0, self._ui_scanning)
                                 break
-                        except Exception:
-                            pass
-                    
-                    if not self._running:
-                        break
+                            else:
+                                print(f"[Scanner] Recovery attempt {attempt} failed: {init_msg}")
+                        except Exception as e:
+                            print(f"[Scanner] Recovery attempt {attempt} raised: {e}")
+                        time.sleep(1.0)
 
-                    print("[Scanner] Device physically reconnected. Re-initializing...")
-                    try:
-                        self.sdk.close_device()
-                        time.sleep(0.5)
-                        init_ok, init_msg = self.sdk.init_device()
-                        if init_ok:
-                            print("[Scanner] Re-initialization successful.")
-                            self.after(0, lambda: self.master.master._update_badge(True))
-                            self.after(0, self._ui_scanning)
-                            continue
-                        else:
-                            print(f"[Scanner] Re-initialization failed: {init_msg}")
-                    except Exception as e:
-                        print(f"[Scanner] Re-initialization error: {e}")
-                    
-                    time.sleep(1.0)
-                    continue
+                    if not recovered:
+                        # Step 2: device is physically disconnected — poll until it returns
+                        print("[Scanner] All reinit attempts failed. Waiting for USB reconnect...")
+                        poll_count = 0
+                        while self._running:
+                            time.sleep(2.0)
+                            poll_count += 1
+                            try:
+                                self.sdk.close_device()
+                                time.sleep(0.5)
+                                init_ok, _ = self.sdk.init_device()
+                                if init_ok:
+                                    print(f"[Scanner] USB reconnected after {poll_count * 2}s — resuming.")
+                                    self._consec_errors = 0
+                                    self.after(0, lambda: self.master.master._update_badge(True))
+                                    self.after(0, self._ui_scanning)
+                                    break
+                            except Exception:
+                                pass
                 else:
-                    # Normal timeout (no finger), back off briefly and continue
+                    # Under threshold — back off briefly, give DLL a moment
                     time.sleep(0.5)
-                    continue
+                continue
+
+
 
             # ── Real scan captured ────────────────────────────────────────────
             ts    = datetime.now().strftime("%H:%M:%S")
@@ -227,6 +314,7 @@ class ScannerPage(tk.Frame):
                         break
                     self.after(0, self._ui_reinit)
                     time.sleep(0.1)
+                    self.after(0, self._ui_scanning)   # back to scanning state
                     continue
 
                 # 1. Sync with server first (synchronously in background thread)
@@ -292,9 +380,11 @@ class ScannerPage(tk.Frame):
             if not self._running:
                 break
 
-            # Reinit UI state (keep hardware open for high-speed scanning)
+            # Reinit UI state then transition back to scanning animation
             self.after(0, self._ui_reinit)
             time.sleep(0.1)
+            self.after(0, self._ui_scanning)   # restart ring animation
+
 
     # ── Matching ──────────────────────────────────────────────────────────────
 
